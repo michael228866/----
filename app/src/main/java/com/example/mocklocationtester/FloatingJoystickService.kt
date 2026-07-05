@@ -36,7 +36,6 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-private const val KMH_PER_MPS = 3.6f
 private const val DEFAULT_MAX_SPEED_KMH = 5f
 
 class FloatingJoystickService : Service() {

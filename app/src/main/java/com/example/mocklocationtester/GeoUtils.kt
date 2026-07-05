@@ -136,6 +136,59 @@ fun generateRandomWaypointsInPolygon(
     return nearestNeighborSort(generated)
 }
 
+fun generateSerpentineWaypointsInPolygon(
+    polygon: List<LatLng>,
+    rowCount: Int = 16
+): List<LatLng> {
+    require(polygon.size >= 3) { "多邊形至少需要 3 個座標點。" }
+
+    val minLat = polygon.minOf { it.latitude }
+    val maxLat = polygon.maxOf { it.latitude }
+    require(minLat < maxLat) { "多邊形緯度範圍不可為空。" }
+
+    val rows = rowCount.coerceIn(5, 25)
+    val points = mutableListOf<LatLng>()
+
+    for (row in 1..rows) {
+        val latitude = minLat + (maxLat - minLat) * row / (rows + 1.0)
+        val intersections = polygonScanlineIntersections(polygon, latitude)
+        if (intersections.size < 2) {
+            continue
+        }
+
+        val segments = intersections.chunked(2).filter { it.size == 2 }
+        val orderedSegments = if (row % 2 == 1) segments else segments.asReversed()
+        orderedSegments.forEach { segment ->
+            val left = segment[0]
+            val right = segment[1]
+            if (left == right) {
+                val point = LatLng(latitude, normalizeLongitude(left))
+                if (isPointInPolygon(point, polygon)) {
+                    points.add(point)
+                }
+                return@forEach
+            }
+
+            val inset = (right - left) * 0.02
+            val startLon = left + inset
+            val endLon = right - inset
+            val start = LatLng(latitude, normalizeLongitude(startLon))
+            val end = LatLng(latitude, normalizeLongitude(endLon))
+            val rowPoints = if (row % 2 == 1) listOf(start, end) else listOf(end, start)
+            rowPoints.forEach { point ->
+                if (isPointInPolygon(point, polygon) || isPointNearPolygonBoundary(point, polygon)) {
+                    points.add(point)
+                }
+            }
+        }
+    }
+
+    return points
+        .distinctBy { "${"%.7f".format(it.latitude)},${"%.7f".format(it.longitude)}" }
+        .take(50)
+        .ifEmpty { generateDeterministicGridWaypointsInPolygon(polygon) }
+}
+
 fun normalizeLongitude(lonDeg: Double): Double {
     val normalized = (lonDeg + 540.0) % 360.0 - 180.0
     return if (normalized == -180.0 && lonDeg > 0.0) {
@@ -174,6 +227,59 @@ private fun nearestNeighborSort(points: List<LatLng>): List<LatLng> {
     }
 
     return ordered
+}
+
+private fun polygonScanlineIntersections(polygon: List<LatLng>, latitude: Double): List<Double> {
+    val intersections = mutableListOf<Double>()
+    polygon.indices.forEach { index ->
+        val a = polygon[index]
+        val b = polygon[(index + 1) % polygon.size]
+        val minLat = min(a.latitude, b.latitude)
+        val maxLat = max(a.latitude, b.latitude)
+        if (a.latitude == b.latitude || latitude < minLat || latitude >= maxLat) {
+            return@forEach
+        }
+
+        val fraction = (latitude - a.latitude) / (b.latitude - a.latitude)
+        val longitude = a.longitude + fraction * (b.longitude - a.longitude)
+        intersections.add(longitude)
+    }
+    return intersections.sorted()
+}
+
+private fun isPointNearPolygonBoundary(point: LatLng, polygon: List<LatLng>): Boolean {
+    val epsilon = 0.0000001
+    return polygon.any { vertex ->
+        kotlin.math.abs(vertex.latitude - point.latitude) <= epsilon &&
+            kotlin.math.abs(normalizeLongitude(vertex.longitude - point.longitude)) <= epsilon
+    }
+}
+
+private fun generateDeterministicGridWaypointsInPolygon(polygon: List<LatLng>): List<LatLng> {
+    val minLat = polygon.minOf { it.latitude }
+    val maxLat = polygon.maxOf { it.latitude }
+    val minLon = polygon.minOf { it.longitude }
+    val maxLon = polygon.maxOf { it.longitude }
+    val points = mutableListOf<LatLng>()
+    val rows = 12
+    val columns = 12
+
+    for (row in 1..rows) {
+        val latitude = minLat + (maxLat - minLat) * row / (rows + 1.0)
+        val columnsRange = if (row % 2 == 1) 1..columns else columns downTo 1
+        for (column in columnsRange) {
+            val longitude = minLon + (maxLon - minLon) * column / (columns + 1.0)
+            val point = LatLng(latitude, normalizeLongitude(longitude))
+            if (isPointInPolygon(point, polygon)) {
+                points.add(point)
+                if (points.size >= 50) {
+                    return points
+                }
+            }
+        }
+    }
+
+    return points
 }
 
 fun boundingBox(points: List<LatLng>): Pair<LatLng, LatLng> {
