@@ -27,11 +27,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.MapEventsOverlay
 import org.osmdroid.views.overlay.Marker
-import org.osmdroid.views.overlay.Overlay
 import org.osmdroid.views.overlay.Polyline
 import kotlin.math.sqrt
 
@@ -121,7 +122,6 @@ fun RouteMapView(
             },
             update = { map ->
                 map.overlays.clear()
-                map.overlays.add(MapTapOverlay(onMapClick, routeWaypoints, areaPolygonPoints))
 
                 if (routeWaypoints.size >= 2) {
                     val routeLine = Polyline().apply {
@@ -192,6 +192,7 @@ fun RouteMapView(
                             title = "區域點 ${index + 1}"
                             icon = numberedMarkerIcon(map.context, index + 1, Color.rgb(210, 75, 75))
                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                            setOnMarkerClickListener { _, _ -> true }
                         }
                     )
                 }
@@ -202,7 +203,19 @@ fun RouteMapView(
                         title = "目前位置"
                         icon = currentMarkerIcon(map.context)
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                        setOnMarkerClickListener { _, _ -> true }
                     }
+                )
+
+                map.overlays.add(
+                    createMapTapOverlay(
+                        mapView = map,
+                        onMapClick = onMapClick,
+                        routeWaypoints = routeWaypoints,
+                        areaPolygonPoints = areaPolygonPoints,
+                        generatedWaypoints = generatedWaypoints,
+                        currentPosition = currentPosition
+                    )
                 )
 
                 val currentGeoPoint = GeoPoint(currentPosition.latitude, currentPosition.longitude)
@@ -223,29 +236,38 @@ fun RouteMapView(
     }
 }
 
-private class MapTapOverlay(
-    private val onMapClick: (LatLng) -> Unit,
-    private val routeWaypoints: List<LatLng>,
-    private val areaPolygonPoints: List<LatLng>
-) : Overlay() {
-    override fun onSingleTapConfirmed(event: MotionEvent, mapView: MapView): Boolean {
-        if (isNearEditableMarker(event, mapView)) {
-            return false
-        }
+private fun createMapTapOverlay(
+    mapView: MapView,
+    onMapClick: (LatLng) -> Unit,
+    routeWaypoints: List<LatLng>,
+    areaPolygonPoints: List<LatLng>,
+    generatedWaypoints: List<LatLng>,
+    currentPosition: LatLng
+): MapEventsOverlay {
+    val markerPoints = routeWaypoints + areaPolygonPoints + generatedWaypoints + currentPosition
+    return MapEventsOverlay(
+        object : MapEventsReceiver {
+            override fun singleTapConfirmedHelper(point: GeoPoint): Boolean {
+                if (isNearAnyMarker(point, mapView, markerPoints)) {
+                    return false
+                }
+                onMapClick(LatLng(point.latitude, point.longitude))
+                return true
+            }
 
-        val geo = mapView.projection.fromPixels(event.x.toInt(), event.y.toInt()) as GeoPoint
-        onMapClick(LatLng(geo.latitude, geo.longitude))
-        return true
-    }
-
-    private fun isNearEditableMarker(event: MotionEvent, mapView: MapView): Boolean {
-        val threshold = 36f * mapView.resources.displayMetrics.density
-        return (routeWaypoints + areaPolygonPoints).any { point ->
-            val screenPoint = mapView.projection.toPixels(GeoPoint(point.latitude, point.longitude), null)
-            val dx = event.x - screenPoint.x
-            val dy = event.y - screenPoint.y
-            sqrt(dx * dx + dy * dy) <= threshold
+            override fun longPressHelper(point: GeoPoint): Boolean = false
         }
+    )
+}
+
+private fun isNearAnyMarker(tappedPoint: GeoPoint, mapView: MapView, markerPoints: List<LatLng>): Boolean {
+    val threshold = 44f * mapView.resources.displayMetrics.density
+    val tappedScreenPoint = mapView.projection.toPixels(tappedPoint, null)
+    return markerPoints.any { point ->
+        val markerScreenPoint = mapView.projection.toPixels(GeoPoint(point.latitude, point.longitude), null)
+        val dx = tappedScreenPoint.x - markerScreenPoint.x
+        val dy = tappedScreenPoint.y - markerScreenPoint.y
+        sqrt((dx * dx + dy * dy).toFloat()) <= threshold
     }
 }
 
