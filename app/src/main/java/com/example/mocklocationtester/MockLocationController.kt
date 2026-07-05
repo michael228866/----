@@ -12,7 +12,9 @@ enum class MockMode {
     MANUAL_JOYSTICK,
     FLOATING_JOYSTICK,
     ROUTE_CRUISE,
-    AREA_CRUISE
+    AREA_CRUISE,
+    HOLD_POSITION,
+    DESTINATION_WALK
 }
 
 data class MockLocationState(
@@ -98,7 +100,6 @@ object MockLocationController {
     @Synchronized
     fun endMode(context: Context, mode: MockMode) {
         if (activeMode == mode) {
-            activeMode = MockMode.IDLE
             currentSpeed = 0f
             LastMockLocationState.save(
                 context = context,
@@ -107,6 +108,11 @@ object MockLocationController {
                 speedMetersPerSecond = currentSpeed,
                 bearingDegrees = currentBearing
             )
+            activeMode = if (mode == MockMode.FLOATING_JOYSTICK) {
+                MockMode.HOLD_POSITION
+            } else {
+                MockMode.IDLE
+            }
             persistAndBroadcast(context)
         }
     }
@@ -273,6 +279,21 @@ object MockLocationController {
             }
         }
         configuredProviders.clear()
+    }
+
+    @Synchronized
+    fun clearMockLocation(context: Context) {
+        currentSpeed = 0f
+        activeMode = MockMode.IDLE
+        LastMockLocationState.save(
+            context = context,
+            latitude = currentLat,
+            longitude = currentLng,
+            speedMetersPerSecond = currentSpeed,
+            bearingDegrees = currentBearing
+        )
+        clearTestProvider(context)
+        persistAndBroadcast(context)
     }
 
     @Synchronized

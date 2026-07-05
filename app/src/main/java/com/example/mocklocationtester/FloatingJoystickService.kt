@@ -53,6 +53,8 @@ class FloatingJoystickService : Service() {
     private var currentBearingDegrees = 0f
     private var lastLocationUpdateElapsedMillis = 0L
     private var lastError: String? = null
+    private var startHoldOnDestroy = true
+    private var hasStartedMockMode = false
 
     private val locationTick = object : Runnable {
         override fun run() {
@@ -69,9 +71,17 @@ class FloatingJoystickService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            startHoldOnDestroy = intent.getBooleanExtra(EXTRA_START_HOLD_ON_STOP, true)
             stopSelf()
             return START_NOT_STICKY
         }
+
+        stopService(
+            Intent(this, HoldPositionService::class.java).apply {
+                action = HoldPositionService.ACTION_STOP
+            }
+        )
+        startHoldOnDestroy = true
 
         currentLatitude = intent?.getDoubleExtra(EXTRA_LATITUDE, currentLatitude) ?: currentLatitude
         currentLongitude = intent?.getDoubleExtra(EXTRA_LONGITUDE, currentLongitude) ?: currentLongitude
@@ -98,6 +108,7 @@ class FloatingJoystickService : Service() {
             accuracyMeters = currentAccuracyMeters
         )
         lastError = beginResult.message
+        hasStartedMockMode = beginResult.success
 
         if (overlayView == null) {
             addOverlayView()
@@ -116,8 +127,21 @@ class FloatingJoystickService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacks(locationTick)
+        if (hasStartedMockMode) {
+            advanceLocationByElapsedTime()
+            currentSpeedMetersPerSecond = 0f
+            pushCurrentMockLocation()
+        }
         removeOverlayView()
         MockLocationController.endMode(this, MockMode.FLOATING_JOYSTICK)
+        if (startHoldOnDestroy && hasStartedMockMode) {
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, HoldPositionService::class.java).apply {
+                    action = HoldPositionService.ACTION_START
+                }
+            )
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
@@ -270,6 +294,7 @@ class FloatingJoystickService : Service() {
         )
         lastError = result.message
         if (result.success) {
+            hasStartedMockMode = true
             currentLatitude = MockLocationController.currentLat
             currentLongitude = MockLocationController.currentLng
             currentSpeedMetersPerSecond = MockLocationController.currentSpeed
@@ -395,6 +420,7 @@ class FloatingJoystickService : Service() {
         const val EXTRA_LONGITUDE = "com.example.mocklocationtester.extra.LONGITUDE"
         const val EXTRA_ACCURACY = "com.example.mocklocationtester.extra.ACCURACY"
         const val EXTRA_MAX_SPEED_KMH = "com.example.mocklocationtester.extra.MAX_SPEED_KMH"
+        const val EXTRA_START_HOLD_ON_STOP = "com.example.mocklocationtester.extra.START_HOLD_ON_STOP"
 
         private const val NOTIFICATION_ID = 2001
         private const val NOTIFICATION_CHANNEL_ID = "mock_location_joystick"

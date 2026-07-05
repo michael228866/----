@@ -43,6 +43,7 @@ fun RouteMapView(
     routeWaypoints: List<LatLng>,
     areaPolygonPoints: List<LatLng>,
     generatedWaypoints: List<LatLng>,
+    destinationWaypoints: List<LatLng>,
     externalRecenterRequest: Int,
     onMapClick: (LatLng) -> Unit,
     onMapPointClick: (MapPointSelection) -> Unit
@@ -155,6 +156,15 @@ fun RouteMapView(
                     map.overlays.add(generatedLine)
                 }
 
+                if (destinationWaypoints.size >= 2) {
+                    val destinationLine = Polyline().apply {
+                        setPoints(destinationWaypoints.map { GeoPoint(it.latitude, it.longitude) })
+                        outlinePaint.color = Color.rgb(230, 140, 35)
+                        outlinePaint.strokeWidth = 5f
+                    }
+                    map.overlays.add(destinationLine)
+                }
+
                 routeWaypoints.forEachIndexed { index, point ->
                     map.overlays.add(
                         Marker(map).apply {
@@ -197,6 +207,18 @@ fun RouteMapView(
                     )
                 }
 
+                destinationWaypoints.forEachIndexed { index, point ->
+                    map.overlays.add(
+                        Marker(map).apply {
+                            position = GeoPoint(point.latitude, point.longitude)
+                            title = "目的地 ${index + 1}"
+                            icon = numberedMarkerIcon(map.context, index + 1, Color.rgb(230, 140, 35))
+                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                            setOnMarkerClickListener { _, _ -> true }
+                        }
+                    )
+                }
+
                 map.overlays.add(
                     Marker(map).apply {
                         position = GeoPoint(currentPosition.latitude, currentPosition.longitude)
@@ -214,6 +236,7 @@ fun RouteMapView(
                         routeWaypoints = routeWaypoints,
                         areaPolygonPoints = areaPolygonPoints,
                         generatedWaypoints = generatedWaypoints,
+                        destinationWaypoints = destinationWaypoints,
                         currentPosition = currentPosition
                     )
                 )
@@ -242,9 +265,10 @@ private fun createMapTapOverlay(
     routeWaypoints: List<LatLng>,
     areaPolygonPoints: List<LatLng>,
     generatedWaypoints: List<LatLng>,
+    destinationWaypoints: List<LatLng>,
     currentPosition: LatLng
 ): MapEventsOverlay {
-    val markerPoints = routeWaypoints + areaPolygonPoints + generatedWaypoints + currentPosition
+    val markerPoints = routeWaypoints + areaPolygonPoints + generatedWaypoints + destinationWaypoints + currentPosition
     return MapEventsOverlay(
         object : MapEventsReceiver {
             override fun singleTapConfirmedHelper(point: GeoPoint): Boolean {

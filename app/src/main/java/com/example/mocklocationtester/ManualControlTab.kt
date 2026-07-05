@@ -64,6 +64,8 @@ fun ManualControlTab(
     onUseLastMockLocationAsStart: () -> Unit,
     onUseCurrentPhoneLocationAsStart: () -> Unit,
     onClearLastMockLocation: () -> Unit,
+    onHoldPosition: () -> Unit,
+    onStopMockLocation: () -> Unit,
     onPushCurrentLocation: () -> Unit,
     onStartWalking: () -> Unit,
     onStopWalking: () -> Unit,
@@ -152,6 +154,21 @@ fun ManualControlTab(
     Section(title = "模擬定位控制") {
         Button(onClick = onPushCurrentLocation, modifier = Modifier.fillMaxWidth()) {
             Text("推送目前位置")
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = onHoldPosition,
+                enabled = hasLastMockLocation,
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+            ) {
+                Text("停留在最後位置", textAlign = TextAlign.Center)
+            }
+            OutlinedButton(
+                onClick = onStopMockLocation,
+                modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+            ) {
+                Text("停止模擬定位", textAlign = TextAlign.Center)
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             Button(

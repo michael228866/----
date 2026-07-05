@@ -122,6 +122,7 @@ class MainActivity : ComponentActivity() {
     private var maxSpeedKmh by mutableStateOf(5f)
     private var routeSpeedKmh by mutableStateOf(5f)
     private var areaSpeedKmh by mutableStateOf(5f)
+    private var destinationWalkSpeedKmh by mutableStateOf(5f)
     private var routeEndBehavior by mutableStateOf(RouteEndBehavior.PING_PONG)
     private var routeStartMode by mutableStateOf(RouteStartMode.NEAREST)
     private var mapEditMode by mutableStateOf(MapEditMode.ROUTE)
@@ -147,11 +148,16 @@ class MainActivity : ComponentActivity() {
     private var isWalking by mutableStateOf(false)
     private var isRouteCruising by mutableStateOf(false)
     private var isAreaCruising by mutableStateOf(false)
+    private var isDestinationWalking by mutableStateOf(false)
     private var hasLastMockLocation by mutableStateOf(false)
+    private var currentDestinationIndex by mutableStateOf<Int?>(null)
+    private var destinationRemainingDistanceMeters by mutableStateOf(0.0)
+    private var destinationEstimatedArrivalSeconds by mutableStateOf<Double?>(null)
 
     private val routeWaypoints = mutableStateListOf<LatLng>()
     private val areaPolygonPoints = mutableStateListOf<LatLng>()
     private val generatedAreaWaypoints = mutableStateListOf<LatLng>()
+    private val destinationWaypoints = mutableStateListOf<LatLng>()
 
     private var isConsumerRunning by mutableStateOf(false)
     private var gpsConsumerLocation by mutableStateOf<ConsumerLocationUi?>(null)
@@ -160,6 +166,7 @@ class MainActivity : ComponentActivity() {
 
     private var walkingJob: Job? = null
     private var cruiseJob: Job? = null
+    private var destinationWalkJob: Job? = null
     private var consumerCallback: LocationCallback? = null
     private var gpsConsumerListener: LocationListener? = null
     private var networkConsumerListener: LocationListener? = null
@@ -213,6 +220,7 @@ class MainActivity : ComponentActivity() {
                     maxSpeedKmh = maxSpeedKmh,
                     routeSpeedKmh = routeSpeedKmh,
                     areaSpeedKmh = areaSpeedKmh,
+                    destinationWalkSpeedKmh = destinationWalkSpeedKmh,
                     routeEndBehavior = routeEndBehavior,
                     routeStartMode = routeStartMode,
                     areaRouteMode = areaRouteMode,
@@ -232,12 +240,17 @@ class MainActivity : ComponentActivity() {
                     isWalking = isWalking,
                     isRouteCruising = isRouteCruising,
                     isAreaCruising = isAreaCruising,
+                    isDestinationWalking = isDestinationWalking,
                     hasLastMockLocation = hasLastMockLocation,
+                    currentDestinationIndex = currentDestinationIndex,
+                    destinationRemainingDistanceMeters = destinationRemainingDistanceMeters,
+                    destinationEstimatedArrivalSeconds = destinationEstimatedArrivalSeconds,
                     mapEditMode = mapEditMode,
                     mapRecenterRequest = mapRecenterRequest,
                     routeWaypoints = routeWaypoints,
                     areaPolygonPoints = areaPolygonPoints,
                     generatedAreaWaypoints = generatedAreaWaypoints,
+                    destinationWaypoints = destinationWaypoints,
                     isConsumerRunning = isConsumerRunning,
                     gpsConsumerLocation = gpsConsumerLocation,
                     networkConsumerLocation = networkConsumerLocation,
@@ -249,6 +262,7 @@ class MainActivity : ComponentActivity() {
                     onMaxSpeedChange = ::updateMaxSpeed,
                     onRouteSpeedChange = { routeSpeedKmh = it.coerceIn(1f, 100f) },
                     onAreaSpeedChange = { areaSpeedKmh = it.coerceIn(1f, 100f) },
+                    onDestinationWalkSpeedChange = { destinationWalkSpeedKmh = it.coerceIn(1f, 100f) },
                     onRouteEndBehaviorChange = { routeEndBehavior = it },
                     onRouteStartModeChange = { routeStartMode = it },
                     onMapEditModeChange = { mapEditMode = it },
@@ -257,13 +271,15 @@ class MainActivity : ComponentActivity() {
                     onUseLastMockLocationAsStart = ::useLastMockLocationAsStart,
                     onUseCurrentPhoneLocationAsStart = ::useCurrentPhoneLocationAsStart,
                     onClearLastMockLocation = ::clearLastMockLocation,
+                    onHoldPosition = ::startHoldPosition,
+                    onStopMockLocation = ::stopMockLocation,
                     onPushCurrentLocation = ::pushCurrentLocation,
                     onStartWalking = ::startWalkingSimulation,
                     onStopWalking = ::stopWalkingSimulation,
                     onRequestPermissions = ::requestLocationPermissions,
                     onOpenOverlayPermissionSettings = ::openOverlayPermissionSettings,
                     onStartFloatingJoystick = ::startFloatingJoystickService,
-                    onStopFloatingJoystick = ::stopFloatingJoystickService,
+                    onStopFloatingJoystick = { stopFloatingJoystickService() },
                     onJoystickChange = ::updateJoystick,
                     onJoystickRelease = ::releaseJoystick,
                     onMapClick = ::addMapPoint,
@@ -272,9 +288,12 @@ class MainActivity : ComponentActivity() {
                     onUndoLastMapPoint = ::undoLastMapPoint,
                     onClearRoute = ::clearRouteWaypoints,
                     onClearAreaPolygon = ::clearAreaPolygon,
+                    onClearDestinations = ::clearDestinationWaypoints,
                     onGenerateAreaRoute = ::generateAreaRoute,
                     onStartRouteCruise = ::startRouteCruise,
                     onStartAreaCruise = ::startAreaCruise,
+                    onStartDestinationWalk = ::startDestinationWalk,
+                    onStopDestinationWalk = { stopDestinationWalk() },
                     onStopCruise = ::stopCruise,
                     onStartConsumer = ::startConsumer,
                     onStopConsumer = ::stopConsumer
@@ -303,6 +322,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         stopWalkingSimulation()
         stopCruise()
+        stopDestinationWalk(holdLastPosition = false)
         stopConsumer()
         super.onDestroy()
     }
@@ -366,7 +386,11 @@ class MainActivity : ComponentActivity() {
             MockMode.valueOf(intent.getStringExtra(MockLocationController.EXTRA_MODE) ?: MockMode.IDLE.name)
         }.getOrDefault(MockMode.IDLE)
         refreshLastMockLocationState()
-        mockStatusText = "已同步模擬定位"
+        mockStatusText = when (activeMode) {
+            MockMode.HOLD_POSITION -> "已停留在最後位置"
+            MockMode.DESTINATION_WALK -> "慢走到目的地執行中"
+            else -> "已同步模擬定位"
+        }
     }
 
     private fun applyControllerState(state: MockLocationState, syncInputs: Boolean = false) {
@@ -488,6 +512,87 @@ class MainActivity : ComponentActivity() {
         mockStatusText = "已清除保存位置，目前畫面座標不變"
     }
 
+    private fun startHoldPosition() {
+        refreshPermissionState()
+        refreshMockAppState()
+        if (!hasFineLocationPermission) {
+            operationError = "停留在最後位置需要精確位置權限。"
+            requestLocationPermissions()
+            return
+        }
+        if (!isMockLocationAppSelected) {
+            operationError = "停留在最後位置前，請先將本程式設為模擬位置應用程式。"
+            return
+        }
+        val lastLocation = MockLocationController.lastMockLocation(this)
+        if (lastLocation == null) {
+            operationError = "尚未儲存最後位置。"
+            refreshLastMockLocationState()
+            return
+        }
+
+        stopWalkingSimulation()
+        stopCruise()
+        stopDestinationWalk(holdLastPosition = false)
+        stopFloatingJoystickService(holdLastPosition = false)
+        requestNotificationPermissionIfNeeded()
+
+        currentLatitude = lastLocation.latitude
+        currentLongitude = lastLocation.longitude
+        currentSpeedMetersPerSecond = 0f
+        currentBearingDegrees = lastLocation.bearingDegrees
+        val beginResult = MockLocationController.beginMode(
+            context = this,
+            mode = MockMode.HOLD_POSITION,
+            latitude = currentLatitude,
+            longitude = currentLongitude,
+            accuracyMeters = currentAccuracyMeters
+        )
+        if (!beginResult.success) {
+            operationError = beginResult.message
+            return
+        }
+        val result = MockLocationController.pushLocation(
+            context = this,
+            latitude = currentLatitude,
+            longitude = currentLongitude,
+            accuracyMeters = currentAccuracyMeters,
+            speedMetersPerSecond = 0f,
+            bearingDegrees = currentBearingDegrees,
+            mode = MockMode.HOLD_POSITION
+        )
+        operationError = result.message
+        if (!result.success) {
+            return
+        }
+
+        ContextCompat.startForegroundService(
+            this,
+            Intent(this, HoldPositionService::class.java).apply {
+                action = HoldPositionService.ACTION_START
+            }
+        )
+        mockStatusText = "已停留在最後位置"
+        activeMode = MockMode.HOLD_POSITION
+    }
+
+    private fun stopMockLocation() {
+        stopWalkingSimulation()
+        stopCruise()
+        stopDestinationWalk(holdLastPosition = false)
+        stopFloatingJoystickService(holdLastPosition = false)
+        stopHoldPositionService()
+        MockLocationController.clearMockLocation(this)
+        applyControllerState(MockLocationController.latestState(this), syncInputs = false)
+        currentSpeedMetersPerSecond = 0f
+        operationError = null
+        mockStatusText = "已停止模擬定位"
+    }
+
+    private fun stopHoldPositionService() {
+        stopService(Intent(this, HoldPositionService::class.java))
+    }
+
     @SuppressLint("MissingPermission")
     private fun useCurrentPhoneLocationAsStart() {
         refreshPermissionState()
@@ -578,6 +683,9 @@ class MainActivity : ComponentActivity() {
         if (!applyAccuracyInput()) {
             return
         }
+        stopCruise()
+        stopDestinationWalk(holdLastPosition = false)
+        stopFloatingJoystickService(holdLastPosition = false)
         if (!prepareMockProvider(MockMode.MANUAL_JOYSTICK)) {
             return
         }
@@ -589,7 +697,8 @@ class MainActivity : ComponentActivity() {
             return
         }
         stopCruise()
-        stopFloatingJoystickService()
+        stopDestinationWalk(holdLastPosition = false)
+        stopFloatingJoystickService(holdLastPosition = false)
 
         if (!prepareMockProvider(MockMode.MANUAL_JOYSTICK)) {
             return
@@ -681,6 +790,7 @@ class MainActivity : ComponentActivity() {
 
         stopWalkingSimulation()
         stopCruise()
+        stopDestinationWalk(holdLastPosition = false)
         requestNotificationPermissionIfNeeded()
 
         val intent = Intent(this, FloatingJoystickService::class.java).apply {
@@ -695,15 +805,17 @@ class MainActivity : ComponentActivity() {
         operationError = null
     }
 
-    private fun stopFloatingJoystickService() {
+    private fun stopFloatingJoystickService(holdLastPosition: Boolean = true) {
         val intent = Intent(this, FloatingJoystickService::class.java).apply {
             action = FloatingJoystickService.ACTION_STOP
+            putExtra(FloatingJoystickService.EXTRA_START_HOLD_ON_STOP, holdLastPosition)
         }
         startService(intent)
-        if (activeMode == MockMode.FLOATING_JOYSTICK) {
-            MockLocationController.endMode(this, MockMode.FLOATING_JOYSTICK)
+        overlayStatusText = if (holdLastPosition) {
+            "已關閉懸浮搖桿，位置停留在最後座標"
+        } else {
+            "已停止懸浮搖桿"
         }
-        overlayStatusText = "已停止懸浮搖桿"
     }
 
     private fun addMapPoint(point: LatLng) {
@@ -723,6 +835,16 @@ class MainActivity : ComponentActivity() {
                 if (isAreaCruising) {
                     stopCruise()
                     operationError = "範圍已變更，已停止區域巡航。"
+                }
+            }
+
+            MapEditMode.DESTINATION -> {
+                destinationWaypoints.add(point)
+                operationError = null
+                mockStatusText = "已加入第 ${destinationWaypoints.size} 個目的地"
+                if (isDestinationWalking) {
+                    stopDestinationWalk(holdLastPosition = true)
+                    operationError = "目的地已變更，已停止慢走並停留在最後位置。"
                 }
             }
         }
@@ -765,6 +887,14 @@ class MainActivity : ComponentActivity() {
                     deleteAreaPolygonPoint(areaPolygonPoints.lastIndex)
                 }
             }
+
+            MapEditMode.DESTINATION -> {
+                if (destinationWaypoints.isNotEmpty()) {
+                    destinationWaypoints.removeAt(destinationWaypoints.lastIndex)
+                    operationError = null
+                    mockStatusText = "已復原上一個目的地"
+                }
+            }
         }
     }
 
@@ -785,6 +915,18 @@ class MainActivity : ComponentActivity() {
         generatedAreaWaypoints.clear()
         operationError = null
         mockStatusText = "已清除全部範圍"
+    }
+
+    private fun clearDestinationWaypoints() {
+        if (isDestinationWalking) {
+            stopDestinationWalk(holdLastPosition = true)
+        }
+        destinationWaypoints.clear()
+        currentDestinationIndex = null
+        destinationRemainingDistanceMeters = 0.0
+        destinationEstimatedArrivalSeconds = null
+        operationError = null
+        mockStatusText = "已清除目的地"
     }
 
     private fun generateAreaRoute() {
@@ -834,6 +976,174 @@ class MainActivity : ComponentActivity() {
         startCruise(generatedAreaWaypoints.toList(), MockMode.AREA_CRUISE)
     }
 
+    private fun startDestinationWalk() {
+        if (destinationWaypoints.isEmpty()) {
+            operationError = "請先切換到慢走到目的地，並在地圖上新增目的地。"
+            return
+        }
+        refreshPermissionState()
+        refreshMockAppState()
+        if (!hasFineLocationPermission) {
+            operationError = "慢走到目的地需要精確位置權限。"
+            requestLocationPermissions()
+            return
+        }
+        if (!isMockLocationAppSelected) {
+            operationError = "開始慢走前，請先將本程式設為模擬位置應用程式。"
+            return
+        }
+
+        stopWalkingSimulation()
+        stopFloatingJoystickService(holdLastPosition = false)
+        stopCruise()
+        stopDestinationWalk(holdLastPosition = false)
+        stopHoldPositionService()
+
+        val initial = LatLng(currentLatitude, currentLongitude)
+        val beginResult = MockLocationController.beginMode(
+            context = this,
+            mode = MockMode.DESTINATION_WALK,
+            latitude = initial.latitude,
+            longitude = initial.longitude,
+            accuracyMeters = currentAccuracyMeters
+        )
+        if (!beginResult.success) {
+            operationError = beginResult.message
+            return
+        }
+
+        val simulator = DestinationWalkSimulator(destinationWaypoints.toList())
+        val initialStep = simulator.step(
+            currentPosition = initial,
+            speedMetersPerSecond = 0f,
+            updateIntervalSeconds = 1.0
+        )
+        isDestinationWalking = true
+        currentDestinationIndex = initialStep.targetIndex
+        destinationRemainingDistanceMeters = initialStep.remainingDistanceMeters
+        destinationEstimatedArrivalSeconds = null
+        currentSpeedMetersPerSecond = 0f
+        operationError = null
+        mockStatusText = "慢走到目的地執行中"
+
+        destinationWalkJob = lifecycleScope.launch {
+            while (isActive) {
+                delay(1000L)
+                val speedMetersPerSecond = destinationWalkSpeedKmh / KMH_PER_MPS
+                val step = simulator.step(
+                    currentPosition = LatLng(currentLatitude, currentLongitude),
+                    speedMetersPerSecond = speedMetersPerSecond,
+                    updateIntervalSeconds = 1.0
+                )
+                currentLatitude = step.position.latitude
+                currentLongitude = step.position.longitude
+                currentSpeedMetersPerSecond = step.speedMetersPerSecond
+                currentBearingDegrees = step.bearingDegrees
+                currentDestinationIndex = step.targetIndex
+                destinationRemainingDistanceMeters = step.remainingDistanceMeters
+                destinationEstimatedArrivalSeconds = step.estimatedArrivalSeconds
+
+                val pushed = MockLocationController.pushLocation(
+                    context = this@MainActivity,
+                    latitude = currentLatitude,
+                    longitude = currentLongitude,
+                    accuracyMeters = currentAccuracyMeters,
+                    speedMetersPerSecond = currentSpeedMetersPerSecond,
+                    bearingDegrees = currentBearingDegrees,
+                    mode = MockMode.DESTINATION_WALK
+                )
+                if (!pushed.success) {
+                    operationError = pushed.message
+                    stopDestinationWalk(holdLastPosition = false)
+                    break
+                }
+
+                if (step.finished) {
+                    finishDestinationWalkToHold()
+                    break
+                }
+            }
+        }
+    }
+
+    private fun stopDestinationWalk(holdLastPosition: Boolean = true) {
+        destinationWalkJob?.cancel()
+        destinationWalkJob = null
+        val wasWalkingToDestination = isDestinationWalking
+        isDestinationWalking = false
+        currentDestinationIndex = null
+        destinationEstimatedArrivalSeconds = null
+
+        if (!wasWalkingToDestination) {
+            return
+        }
+
+        currentSpeedMetersPerSecond = 0f
+        if (holdLastPosition) {
+            enterHoldPositionFromCurrent("已停止慢走，停留在最後位置")
+        } else {
+            MockLocationController.endMode(this, MockMode.DESTINATION_WALK)
+            mockStatusText = "已停止慢走"
+        }
+    }
+
+    private fun finishDestinationWalkToHold() {
+        destinationWalkJob?.cancel()
+        destinationWalkJob = null
+        isDestinationWalking = false
+        currentDestinationIndex = null
+        destinationRemainingDistanceMeters = 0.0
+        destinationEstimatedArrivalSeconds = 0.0
+        currentSpeedMetersPerSecond = 0f
+        enterHoldPositionFromCurrent("已抵達所有目的地，已停留在最後位置")
+    }
+
+    private fun enterHoldPositionFromCurrent(statusText: String) {
+        currentSpeedMetersPerSecond = 0f
+        LastMockLocationState.save(
+            context = this,
+            latitude = currentLatitude,
+            longitude = currentLongitude,
+            speedMetersPerSecond = 0f,
+            bearingDegrees = currentBearingDegrees
+        )
+        val beginResult = MockLocationController.beginMode(
+            context = this,
+            mode = MockMode.HOLD_POSITION,
+            latitude = currentLatitude,
+            longitude = currentLongitude,
+            accuracyMeters = currentAccuracyMeters
+        )
+        if (!beginResult.success) {
+            operationError = beginResult.message
+            return
+        }
+        val pushed = MockLocationController.pushLocation(
+            context = this,
+            latitude = currentLatitude,
+            longitude = currentLongitude,
+            accuracyMeters = currentAccuracyMeters,
+            speedMetersPerSecond = 0f,
+            bearingDegrees = currentBearingDegrees,
+            mode = MockMode.HOLD_POSITION
+        )
+        operationError = pushed.message
+        if (!pushed.success) {
+            return
+        }
+
+        requestNotificationPermissionIfNeeded()
+        ContextCompat.startForegroundService(
+            this,
+            Intent(this, HoldPositionService::class.java).apply {
+                action = HoldPositionService.ACTION_START
+            }
+        )
+        activeMode = MockMode.HOLD_POSITION
+        mockStatusText = statusText
+        refreshLastMockLocationState()
+    }
+
     private fun startCruise(waypoints: List<LatLng>, mode: MockMode) {
         refreshPermissionState()
         refreshMockAppState()
@@ -848,8 +1158,10 @@ class MainActivity : ComponentActivity() {
         }
 
         stopWalkingSimulation()
-        stopFloatingJoystickService()
+        stopFloatingJoystickService(holdLastPosition = false)
         stopCruise()
+        stopDestinationWalk(holdLastPosition = false)
+        stopHoldPositionService()
 
         val initial = LatLng(currentLatitude, currentLongitude)
         val beginResult = MockLocationController.beginMode(
@@ -996,6 +1308,9 @@ class MainActivity : ComponentActivity() {
             return false
         }
 
+        if (mode != MockMode.HOLD_POSITION) {
+            stopHoldPositionService()
+        }
         val result = MockLocationController.beginMode(
             context = this,
             mode = mode,
@@ -1158,6 +1473,7 @@ private fun MockLocationTesterScreen(
     maxSpeedKmh: Float,
     routeSpeedKmh: Float,
     areaSpeedKmh: Float,
+    destinationWalkSpeedKmh: Float,
     routeEndBehavior: RouteEndBehavior,
     routeStartMode: RouteStartMode,
     areaRouteMode: AreaRouteMode,
@@ -1177,12 +1493,17 @@ private fun MockLocationTesterScreen(
     isWalking: Boolean,
     isRouteCruising: Boolean,
     isAreaCruising: Boolean,
+    isDestinationWalking: Boolean,
     hasLastMockLocation: Boolean,
+    currentDestinationIndex: Int?,
+    destinationRemainingDistanceMeters: Double,
+    destinationEstimatedArrivalSeconds: Double?,
     mapEditMode: MapEditMode,
     mapRecenterRequest: Int,
     routeWaypoints: List<LatLng>,
     areaPolygonPoints: List<LatLng>,
     generatedAreaWaypoints: List<LatLng>,
+    destinationWaypoints: List<LatLng>,
     isConsumerRunning: Boolean,
     gpsConsumerLocation: ConsumerLocationUi?,
     networkConsumerLocation: ConsumerLocationUi?,
@@ -1194,6 +1515,7 @@ private fun MockLocationTesterScreen(
     onMaxSpeedChange: (Float) -> Unit,
     onRouteSpeedChange: (Float) -> Unit,
     onAreaSpeedChange: (Float) -> Unit,
+    onDestinationWalkSpeedChange: (Float) -> Unit,
     onRouteEndBehaviorChange: (RouteEndBehavior) -> Unit,
     onRouteStartModeChange: (RouteStartMode) -> Unit,
     onMapEditModeChange: (MapEditMode) -> Unit,
@@ -1202,6 +1524,8 @@ private fun MockLocationTesterScreen(
     onUseLastMockLocationAsStart: () -> Unit,
     onUseCurrentPhoneLocationAsStart: () -> Unit,
     onClearLastMockLocation: () -> Unit,
+    onHoldPosition: () -> Unit,
+    onStopMockLocation: () -> Unit,
     onPushCurrentLocation: () -> Unit,
     onStartWalking: () -> Unit,
     onStopWalking: () -> Unit,
@@ -1217,9 +1541,12 @@ private fun MockLocationTesterScreen(
     onUndoLastMapPoint: () -> Unit,
     onClearRoute: () -> Unit,
     onClearAreaPolygon: () -> Unit,
+    onClearDestinations: () -> Unit,
     onGenerateAreaRoute: () -> Unit,
     onStartRouteCruise: () -> Unit,
     onStartAreaCruise: () -> Unit,
+    onStartDestinationWalk: () -> Unit,
+    onStopDestinationWalk: () -> Unit,
     onStopCruise: () -> Unit,
     onStartConsumer: () -> Unit,
     onStopConsumer: () -> Unit
@@ -1290,6 +1617,8 @@ private fun MockLocationTesterScreen(
                         onUseLastMockLocationAsStart = onUseLastMockLocationAsStart,
                         onUseCurrentPhoneLocationAsStart = onUseCurrentPhoneLocationAsStart,
                         onClearLastMockLocation = onClearLastMockLocation,
+                        onHoldPosition = onHoldPosition,
+                        onStopMockLocation = onStopMockLocation,
                         onPushCurrentLocation = onPushCurrentLocation,
                         onStartWalking = onStartWalking,
                         onStopWalking = onStopWalking,
@@ -1326,6 +1655,7 @@ private fun MockLocationTesterScreen(
                         currentBearingDegrees = currentBearingDegrees,
                         routeSpeedKmh = routeSpeedKmh,
                         areaSpeedKmh = areaSpeedKmh,
+                        destinationWalkSpeedKmh = destinationWalkSpeedKmh,
                         routeEndBehavior = routeEndBehavior,
                         routeStartMode = routeStartMode,
                         mapEditMode = mapEditMode,
@@ -1333,12 +1663,18 @@ private fun MockLocationTesterScreen(
                         routeWaypoints = routeWaypoints,
                         areaPolygonPoints = areaPolygonPoints,
                         generatedAreaWaypoints = generatedAreaWaypoints,
+                        destinationWaypoints = destinationWaypoints,
                         isRouteCruising = isRouteCruising,
                         isAreaCruising = isAreaCruising,
+                        isDestinationWalking = isDestinationWalking,
                         hasLastMockLocation = hasLastMockLocation,
+                        currentDestinationIndex = currentDestinationIndex,
+                        destinationRemainingDistanceMeters = destinationRemainingDistanceMeters,
+                        destinationEstimatedArrivalSeconds = destinationEstimatedArrivalSeconds,
                         mapRecenterRequest = mapRecenterRequest,
                         onRouteSpeedChange = onRouteSpeedChange,
                         onAreaSpeedChange = onAreaSpeedChange,
+                        onDestinationWalkSpeedChange = onDestinationWalkSpeedChange,
                         onRouteEndBehaviorChange = onRouteEndBehaviorChange,
                         onRouteStartModeChange = onRouteStartModeChange,
                         onMapEditModeChange = onMapEditModeChange,
@@ -1346,15 +1682,20 @@ private fun MockLocationTesterScreen(
                         onUseLastMockLocationAsStart = onUseLastMockLocationAsStart,
                         onUseCurrentPhoneLocationAsStart = onUseCurrentPhoneLocationAsStart,
                         onClearLastMockLocation = onClearLastMockLocation,
+                        onHoldPosition = onHoldPosition,
+                        onStopMockLocation = onStopMockLocation,
                         onMapClick = onMapClick,
                         onDeleteRouteWaypoint = onDeleteRouteWaypoint,
                         onDeleteAreaPolygonPoint = onDeleteAreaPolygonPoint,
                         onUndoLastMapPoint = onUndoLastMapPoint,
                         onClearRoute = onClearRoute,
                         onClearAreaPolygon = onClearAreaPolygon,
+                        onClearDestinations = onClearDestinations,
                         onGenerateAreaRoute = onGenerateAreaRoute,
                         onStartRouteCruise = onStartRouteCruise,
                         onStartAreaCruise = onStartAreaCruise,
+                        onStartDestinationWalk = onStartDestinationWalk,
+                        onStopDestinationWalk = onStopDestinationWalk,
                         onStopCruise = onStopCruise
                 )
             }
@@ -1410,6 +1751,8 @@ private fun activeModeText(mode: MockMode): String {
         MockMode.FLOATING_JOYSTICK -> "懸浮搖桿"
         MockMode.ROUTE_CRUISE -> "路徑巡航"
         MockMode.AREA_CRUISE -> "區域巡航"
+        MockMode.HOLD_POSITION -> "停留在最後位置"
+        MockMode.DESTINATION_WALK -> "慢走到目的地"
     }
 }
 

@@ -40,6 +40,7 @@ fun MapPatrolTab(
     currentBearingDegrees: Float,
     routeSpeedKmh: Float,
     areaSpeedKmh: Float,
+    destinationWalkSpeedKmh: Float,
     routeEndBehavior: RouteEndBehavior,
     routeStartMode: RouteStartMode,
     mapEditMode: MapEditMode,
@@ -47,12 +48,18 @@ fun MapPatrolTab(
     routeWaypoints: List<LatLng>,
     areaPolygonPoints: List<LatLng>,
     generatedAreaWaypoints: List<LatLng>,
+    destinationWaypoints: List<LatLng>,
     isRouteCruising: Boolean,
     isAreaCruising: Boolean,
+    isDestinationWalking: Boolean,
     hasLastMockLocation: Boolean,
+    currentDestinationIndex: Int?,
+    destinationRemainingDistanceMeters: Double,
+    destinationEstimatedArrivalSeconds: Double?,
     mapRecenterRequest: Int,
     onRouteSpeedChange: (Float) -> Unit,
     onAreaSpeedChange: (Float) -> Unit,
+    onDestinationWalkSpeedChange: (Float) -> Unit,
     onRouteEndBehaviorChange: (RouteEndBehavior) -> Unit,
     onRouteStartModeChange: (RouteStartMode) -> Unit,
     onMapEditModeChange: (MapEditMode) -> Unit,
@@ -60,15 +67,20 @@ fun MapPatrolTab(
     onUseLastMockLocationAsStart: () -> Unit,
     onUseCurrentPhoneLocationAsStart: () -> Unit,
     onClearLastMockLocation: () -> Unit,
+    onHoldPosition: () -> Unit,
+    onStopMockLocation: () -> Unit,
     onMapClick: (LatLng) -> Unit,
     onDeleteRouteWaypoint: (Int) -> Unit,
     onDeleteAreaPolygonPoint: (Int) -> Unit,
     onUndoLastMapPoint: () -> Unit,
     onClearRoute: () -> Unit,
     onClearAreaPolygon: () -> Unit,
+    onClearDestinations: () -> Unit,
     onGenerateAreaRoute: () -> Unit,
     onStartRouteCruise: () -> Unit,
     onStartAreaCruise: () -> Unit,
+    onStartDestinationWalk: () -> Unit,
+    onStopDestinationWalk: () -> Unit,
     onStopCruise: () -> Unit
 ) {
     var selectedPoint by remember { mutableStateOf<MapPointSelection?>(null) }
@@ -85,6 +97,7 @@ fun MapPatrolTab(
             routeWaypoints = routeWaypoints,
             areaPolygonPoints = areaPolygonPoints,
             generatedWaypoints = generatedAreaWaypoints,
+            destinationWaypoints = destinationWaypoints,
             externalRecenterRequest = mapRecenterRequest,
             onMapClick = onMapClick,
             onMapPointClick = { selectedPoint = it }
@@ -137,6 +150,12 @@ fun MapPatrolTab(
                         modifier = Modifier.weight(1f)
                     )
                 }
+                SelectButton(
+                    text = "新增目的地",
+                    selected = mapEditMode == MapEditMode.DESTINATION,
+                    onClick = { onMapEditModeChange(MapEditMode.DESTINATION) },
+                    modifier = Modifier.fillMaxWidth()
+                )
                 OutlinedButton(onClick = onUndoLastMapPoint, modifier = Modifier.fillMaxWidth()) {
                     Text("復原上一個點")
                 }
@@ -156,6 +175,21 @@ fun MapPatrolTab(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("清除最後位置")
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = onHoldPosition,
+                        enabled = hasLastMockLocation,
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                    ) {
+                        Text("停留在最後位置", textAlign = TextAlign.Center)
+                    }
+                    OutlinedButton(
+                        onClick = onStopMockLocation,
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                    ) {
+                        Text("停止模擬定位", textAlign = TextAlign.Center)
+                    }
                 }
             }
 
@@ -205,6 +239,52 @@ fun MapPatrolTab(
                     ) {
                         Text("產生區域路徑", textAlign = TextAlign.Center)
                     }
+                }
+            }
+
+            Section(title = "慢走到目的地") {
+                InfoRow(label = "目的地", value = "${destinationWaypoints.size} 個")
+                InfoRow(
+                    label = "目前目標點",
+                    value = currentDestinationIndex?.let { "第 ${it + 1} 個目的地" } ?: "尚未開始"
+                )
+                InfoRow(
+                    label = "剩餘距離",
+                    value = "${formatNumber(destinationRemainingDistanceMeters, 1)} 公尺"
+                )
+                InfoRow(
+                    label = "預估到達時間",
+                    value = formatEstimatedTime(destinationEstimatedArrivalSeconds)
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    itemsIndexed(destinationWaypoints) { index, point ->
+                        PointChip(index = index, point = point)
+                    }
+                }
+                InfoRow(label = "慢走速度", value = "目前速度：${formatNumber(destinationWalkSpeedKmh.toDouble(), 1)} km/h")
+                Slider(
+                    value = destinationWalkSpeedKmh,
+                    onValueChange = onDestinationWalkSpeedChange,
+                    valueRange = 1f..100f
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = onStartDestinationWalk,
+                        enabled = !isRouteCruising && !isAreaCruising && !isDestinationWalking && destinationWaypoints.isNotEmpty(),
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                    ) {
+                        Text("開始慢走", textAlign = TextAlign.Center)
+                    }
+                    OutlinedButton(
+                        onClick = onStopDestinationWalk,
+                        enabled = isDestinationWalking,
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                    ) {
+                        Text("停止慢走", textAlign = TextAlign.Center)
+                    }
+                }
+                OutlinedButton(onClick = onClearDestinations, modifier = Modifier.fillMaxWidth()) {
+                    Text("清除目的地")
                 }
             }
 
@@ -263,14 +343,14 @@ fun MapPatrolTab(
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                     Button(
                         onClick = onStartRouteCruise,
-                        enabled = !isRouteCruising && !isAreaCruising,
+                        enabled = !isRouteCruising && !isAreaCruising && !isDestinationWalking,
                         modifier = Modifier.weight(1f).heightIn(min = 48.dp)
                     ) {
                         Text("開始路徑巡航", textAlign = TextAlign.Center)
                     }
                     Button(
                         onClick = onStartAreaCruise,
-                        enabled = !isRouteCruising && !isAreaCruising && generatedAreaWaypoints.size >= 2,
+                        enabled = !isRouteCruising && !isAreaCruising && !isDestinationWalking && generatedAreaWaypoints.size >= 2,
                         modifier = Modifier.weight(1f).heightIn(min = 48.dp)
                     ) {
                         Text("開始區域巡航", textAlign = TextAlign.Center)
@@ -339,6 +419,21 @@ private fun SelectButton(
     }
 }
 
+private fun formatEstimatedTime(seconds: Double?): String {
+    if (seconds == null || !seconds.isFinite()) {
+        return "尚未計算"
+    }
+    if (seconds <= 0.0) {
+        return "已抵達"
+    }
+
+    return when {
+        seconds < 60.0 -> "${formatNumber(seconds, 0)} 秒"
+        seconds < 3600.0 -> "${formatNumber(seconds / 60.0, 1)} 分鐘"
+        else -> "${formatNumber(seconds / 3600.0, 1)} 小時"
+    }
+}
+
 enum class RouteStartMode(val title: String) {
     NEAREST("從最近點開始"),
     FIRST("從第一點開始")
@@ -351,7 +446,8 @@ enum class AreaRouteMode(val title: String) {
 
 enum class MapEditMode(val title: String) {
     ROUTE("路徑選點"),
-    AREA("區域圈選")
+    AREA("區域圈選"),
+    DESTINATION("慢走到目的地")
 }
 
 enum class MapPointType {
