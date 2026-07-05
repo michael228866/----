@@ -100,6 +100,13 @@ object MockLocationController {
         if (activeMode == mode) {
             activeMode = MockMode.IDLE
             currentSpeed = 0f
+            LastMockLocationState.save(
+                context = context,
+                latitude = currentLat,
+                longitude = currentLng,
+                speedMetersPerSecond = currentSpeed,
+                bearingDegrees = currentBearing
+            )
             persistAndBroadcast(context)
         }
     }
@@ -108,6 +115,13 @@ object MockLocationController {
     fun forceIdle(context: Context) {
         activeMode = MockMode.IDLE
         currentSpeed = 0f
+        LastMockLocationState.save(
+            context = context,
+            latitude = currentLat,
+            longitude = currentLng,
+            speedMetersPerSecond = currentSpeed,
+            bearingDegrees = currentBearing
+        )
         persistAndBroadcast(context)
     }
 
@@ -175,6 +189,14 @@ object MockLocationController {
             currentAccuracy = accuracyMeters
             currentSpeed = normalizedSpeed
             currentBearing = normalizedBearing
+            LastMockLocationState.save(
+                context = context,
+                latitude = currentLat,
+                longitude = currentLng,
+                speedMetersPerSecond = currentSpeed,
+                bearingDegrees = currentBearing,
+                timestampMillis = timeMillis
+            )
             persistAndBroadcast(context)
             MockPushResult(
                 success = true,
@@ -195,15 +217,38 @@ object MockLocationController {
     @Synchronized
     fun latestState(context: Context): MockLocationState {
         val prefs = context.getSharedPreferences(SHARED_PREFS_NAME, Context.MODE_PRIVATE)
-        if (prefs.contains(PREF_LATITUDE) && prefs.contains(PREF_LONGITUDE)) {
+        val persistedMode = runCatching {
+            MockMode.valueOf(prefs.getString(PREF_MODE, MockMode.IDLE.name) ?: MockMode.IDLE.name)
+        }.getOrDefault(MockMode.IDLE)
+        val lastMockLocation = LastMockLocationState.load(context)
+
+        if (lastMockLocation != null) {
+            currentLat = lastMockLocation.latitude
+            currentLng = lastMockLocation.longitude
+            currentAccuracy = prefs.getFloat(PREF_ACCURACY, currentAccuracy)
+            currentSpeed = if (persistedMode == MockMode.IDLE) {
+                0f
+            } else {
+                lastMockLocation.speedMetersPerSecond
+            }
+            currentBearing = lastMockLocation.bearingDegrees
+            activeMode = persistedMode
+        } else if (persistedMode != MockMode.IDLE &&
+            prefs.contains(PREF_LATITUDE) &&
+            prefs.contains(PREF_LONGITUDE)
+        ) {
             currentLat = Double.fromBits(prefs.getLong(PREF_LATITUDE, currentLat.toRawBits()))
             currentLng = Double.fromBits(prefs.getLong(PREF_LONGITUDE, currentLng.toRawBits()))
             currentAccuracy = prefs.getFloat(PREF_ACCURACY, currentAccuracy)
             currentSpeed = prefs.getFloat(PREF_SPEED, currentSpeed)
             currentBearing = prefs.getFloat(PREF_BEARING, currentBearing)
-            activeMode = runCatching {
-                MockMode.valueOf(prefs.getString(PREF_MODE, MockMode.IDLE.name) ?: MockMode.IDLE.name)
-            }.getOrDefault(MockMode.IDLE)
+            activeMode = persistedMode
+        } else {
+            currentLat = 25.033964
+            currentLng = 121.564468
+            currentSpeed = 0f
+            currentBearing = 0f
+            activeMode = MockMode.IDLE
         }
 
         return MockLocationState(
@@ -228,6 +273,24 @@ object MockLocationController {
             }
         }
         configuredProviders.clear()
+    }
+
+    @Synchronized
+    fun lastMockLocation(context: Context): LastMockLocationState? {
+        return LastMockLocationState.load(context)
+    }
+
+    @Synchronized
+    fun clearLastMockLocation(context: Context) {
+        LastMockLocationState.clear(context)
+        context.getSharedPreferences(SHARED_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .remove(PREF_LATITUDE)
+            .remove(PREF_LONGITUDE)
+            .remove(PREF_SPEED)
+            .remove(PREF_BEARING)
+            .remove(PREF_MODE)
+            .apply()
     }
 
     @Suppress("DEPRECATION")

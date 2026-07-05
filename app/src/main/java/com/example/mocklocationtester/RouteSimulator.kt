@@ -15,9 +15,10 @@ data class RouteStep(
 
 class RouteSimulator(
     private val waypoints: List<LatLng>,
-    private val endBehavior: RouteEndBehavior = RouteEndBehavior.PING_PONG
+    private val endBehavior: RouteEndBehavior = RouteEndBehavior.PING_PONG,
+    startPosition: LatLng? = null
 ) {
-    private var targetIndex = 0
+    private var targetIndex = nearestWaypointIndex(startPosition)
     private var direction = 1
     private var finished = waypoints.isEmpty()
 
@@ -117,6 +118,15 @@ class RouteSimulator(
                     false
                 }
             }
+        }
+    }
+
+    private fun nearestWaypointIndex(startPosition: LatLng?): Int {
+        if (waypoints.isEmpty() || startPosition == null) {
+            return 0
+        }
+        return waypoints.indices.minBy { index ->
+            distanceMeters(startPosition, waypoints[index])
         }
     }
 }

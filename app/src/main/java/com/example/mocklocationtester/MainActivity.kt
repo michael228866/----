@@ -123,6 +123,7 @@ class MainActivity : ComponentActivity() {
     private var routeSpeedKmh by mutableStateOf(5f)
     private var areaSpeedKmh by mutableStateOf(5f)
     private var routeEndBehavior by mutableStateOf(RouteEndBehavior.PING_PONG)
+    private var mapEditMode by mutableStateOf(MapEditMode.ROUTE)
     private var mapRecenterRequest by mutableStateOf(0)
 
     private var currentLatitude by mutableStateOf(25.033964)
@@ -144,8 +145,10 @@ class MainActivity : ComponentActivity() {
     private var isWalking by mutableStateOf(false)
     private var isRouteCruising by mutableStateOf(false)
     private var isAreaCruising by mutableStateOf(false)
+    private var hasLastMockLocation by mutableStateOf(false)
 
     private val routeWaypoints = mutableStateListOf<LatLng>()
+    private val areaPolygonPoints = mutableStateListOf<LatLng>()
     private val generatedAreaWaypoints = mutableStateListOf<LatLng>()
 
     private var isConsumerRunning by mutableStateOf(false)
@@ -192,7 +195,11 @@ class MainActivity : ComponentActivity() {
         refreshPermissionState()
         refreshMockAppState()
         refreshOverlayPermissionState()
-        applyControllerState(MockLocationController.latestState(this))
+        applyControllerState(MockLocationController.latestState(this), syncInputs = true)
+        refreshLastMockLocationState()
+        if (hasLastMockLocation) {
+            mockStatusText = "已載入上次停止位置"
+        }
 
         setContent {
             MaterialTheme {
@@ -221,8 +228,11 @@ class MainActivity : ComponentActivity() {
                     isWalking = isWalking,
                     isRouteCruising = isRouteCruising,
                     isAreaCruising = isAreaCruising,
+                    hasLastMockLocation = hasLastMockLocation,
+                    mapEditMode = mapEditMode,
                     mapRecenterRequest = mapRecenterRequest,
                     routeWaypoints = routeWaypoints,
+                    areaPolygonPoints = areaPolygonPoints,
                     generatedAreaWaypoints = generatedAreaWaypoints,
                     isConsumerRunning = isConsumerRunning,
                     gpsConsumerLocation = gpsConsumerLocation,
@@ -236,8 +246,11 @@ class MainActivity : ComponentActivity() {
                     onRouteSpeedChange = { routeSpeedKmh = it.coerceIn(1f, 100f) },
                     onAreaSpeedChange = { areaSpeedKmh = it.coerceIn(1f, 100f) },
                     onRouteEndBehaviorChange = { routeEndBehavior = it },
+                    onMapEditModeChange = { mapEditMode = it },
                     onApplyStartLocation = ::applyStartLocationFromInputs,
+                    onUseLastMockLocationAsStart = ::useLastMockLocationAsStart,
                     onUseCurrentPhoneLocationAsStart = ::useCurrentPhoneLocationAsStart,
+                    onClearLastMockLocation = ::clearLastMockLocation,
                     onPushCurrentLocation = ::pushCurrentLocation,
                     onStartWalking = ::startWalkingSimulation,
                     onStopWalking = ::stopWalkingSimulation,
@@ -247,8 +260,12 @@ class MainActivity : ComponentActivity() {
                     onStopFloatingJoystick = ::stopFloatingJoystickService,
                     onJoystickChange = ::updateJoystick,
                     onJoystickRelease = ::releaseJoystick,
-                    onMapClick = ::addWaypoint,
-                    onClearRoute = ::clearRoute,
+                    onMapClick = ::addMapPoint,
+                    onDeleteRouteWaypoint = ::deleteRouteWaypoint,
+                    onDeleteAreaPolygonPoint = ::deleteAreaPolygonPoint,
+                    onUndoLastMapPoint = ::undoLastMapPoint,
+                    onClearRoute = ::clearRouteWaypoints,
+                    onClearAreaPolygon = ::clearAreaPolygon,
                     onGenerateAreaRoute = ::generateAreaRoute,
                     onStartRouteCruise = ::startRouteCruise,
                     onStartAreaCruise = ::startAreaCruise,
@@ -269,6 +286,7 @@ class MainActivity : ComponentActivity() {
         refreshOverlayPermissionState()
         registerMockLocationUpdateReceiver()
         applyControllerState(MockLocationController.latestState(this))
+        refreshLastMockLocationState()
     }
 
     override fun onPause() {
@@ -341,16 +359,30 @@ class MainActivity : ComponentActivity() {
         activeMode = runCatching {
             MockMode.valueOf(intent.getStringExtra(MockLocationController.EXTRA_MODE) ?: MockMode.IDLE.name)
         }.getOrDefault(MockMode.IDLE)
+        refreshLastMockLocationState()
         mockStatusText = "已同步模擬定位"
     }
 
-    private fun applyControllerState(state: MockLocationState) {
+    private fun applyControllerState(state: MockLocationState, syncInputs: Boolean = false) {
         currentLatitude = state.latitude
         currentLongitude = state.longitude
         currentAccuracyMeters = state.accuracyMeters
         currentSpeedMetersPerSecond = state.speedMetersPerSecond
         currentBearingDegrees = state.bearingDegrees
         activeMode = state.mode
+        if (syncInputs) {
+            syncInputsFromCurrentLocation()
+        }
+    }
+
+    private fun syncInputsFromCurrentLocation() {
+        latitudeInput = formatNumber(currentLatitude, 7)
+        longitudeInput = formatNumber(currentLongitude, 7)
+        accuracyInput = formatNumber(currentAccuracyMeters.toDouble(), 1)
+    }
+
+    private fun refreshLastMockLocationState() {
+        hasLastMockLocation = MockLocationController.lastMockLocation(this) != null
     }
 
     private fun refreshMockAppState() {
@@ -409,15 +441,44 @@ class MainActivity : ComponentActivity() {
         currentLatitude = parsed.latitude
         currentLongitude = parsed.longitude
         currentAccuracyMeters = parsed.accuracyMeters
+        currentSpeedMetersPerSecond = 0f
+        joystickRatio = 0f
         operationError = null
         mockStatusText = "已套用起始座標"
+    }
+
+    private fun useLastMockLocationAsStart() {
+        val lastLocation = MockLocationController.lastMockLocation(this)
+        if (lastLocation == null) {
+            operationError = "尚未儲存最後位置。"
+            refreshLastMockLocationState()
+            return
+        }
+
+        currentLatitude = lastLocation.latitude
+        currentLongitude = lastLocation.longitude
+        currentSpeedMetersPerSecond = 0f
+        currentBearingDegrees = lastLocation.bearingDegrees
+        joystickRatio = 0f
+        syncInputsFromCurrentLocation()
+        mapRecenterRequest += 1
+        operationError = null
+        mockStatusText = "已使用最後位置作為起點"
+        refreshLastMockLocationState()
+    }
+
+    private fun clearLastMockLocation() {
+        MockLocationController.clearLastMockLocation(this)
+        refreshLastMockLocationState()
+        operationError = null
+        mockStatusText = "已清除最後位置"
     }
 
     @SuppressLint("MissingPermission")
     private fun useCurrentPhoneLocationAsStart() {
         refreshPermissionState()
         if (!hasFineLocationPermission && !hasCoarseLocationPermission) {
-            operationError = "使用目前位置作為起點需要定位權限。"
+            operationError = "使用目前手機位置作為起點需要定位權限。"
             requestLocationPermissions()
             return
         }
@@ -462,11 +523,10 @@ class MainActivity : ComponentActivity() {
         currentLongitude = normalizeLongitude(location.longitude)
         currentSpeedMetersPerSecond = 0f
         joystickRatio = 0f
-        latitudeInput = formatNumber(currentLatitude, 7)
-        longitudeInput = formatNumber(currentLongitude, 7)
+        syncInputsFromCurrentLocation()
         mapRecenterRequest += 1
         operationError = null
-        mockStatusText = "已使用目前位置作為起點"
+        mockStatusText = "已使用目前手機位置作為起點"
     }
 
     private fun showCurrentPhoneLocationError() {
@@ -511,13 +571,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startWalkingSimulation() {
-        val parsed = parseLocationInputs() ?: return
+        if (!applyAccuracyInput()) {
+            return
+        }
         stopCruise()
         stopFloatingJoystickService()
-
-        currentLatitude = parsed.latitude
-        currentLongitude = parsed.longitude
-        currentAccuracyMeters = parsed.accuracyMeters
 
         if (!prepareMockProvider(MockMode.MANUAL_JOYSTICK)) {
             return
@@ -585,7 +643,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startFloatingJoystickService() {
-        val parsed = parseLocationInputs() ?: return
+        if (!applyAccuracyInput()) {
+            return
+        }
         refreshPermissionState()
         refreshMockAppState()
         refreshOverlayPermissionState()
@@ -608,10 +668,6 @@ class MainActivity : ComponentActivity() {
         stopWalkingSimulation()
         stopCruise()
         requestNotificationPermissionIfNeeded()
-
-        currentLatitude = parsed.latitude
-        currentLongitude = parsed.longitude
-        currentAccuracyMeters = parsed.accuracyMeters
 
         val intent = Intent(this, FloatingJoystickService::class.java).apply {
             action = FloatingJoystickService.ACTION_START
@@ -636,30 +692,96 @@ class MainActivity : ComponentActivity() {
         overlayStatusText = "已停止懸浮搖桿"
     }
 
-    private fun addWaypoint(point: LatLng) {
-        routeWaypoints.add(point)
-        generatedAreaWaypoints.clear()
-        operationError = null
-        mockStatusText = "已加入第 ${routeWaypoints.size} 個座標點"
+    private fun addMapPoint(point: LatLng) {
+        when (mapEditMode) {
+            MapEditMode.ROUTE -> {
+                routeWaypoints.add(point)
+                operationError = null
+                mockStatusText = "已加入第 ${routeWaypoints.size} 個路徑點"
+                restartRouteCruiseAfterRouteChange()
+            }
+
+            MapEditMode.AREA -> {
+                areaPolygonPoints.add(point)
+                generatedAreaWaypoints.clear()
+                operationError = null
+                mockStatusText = "已加入第 ${areaPolygonPoints.size} 個範圍點"
+                if (isAreaCruising) {
+                    stopCruise()
+                    operationError = "範圍已變更，已停止區域巡航。"
+                }
+            }
+        }
     }
 
-    private fun clearRoute() {
-        stopCruise()
-        routeWaypoints.clear()
+    private fun deleteRouteWaypoint(index: Int) {
+        if (index !in routeWaypoints.indices) {
+            return
+        }
+        routeWaypoints.removeAt(index)
+        operationError = null
+        mockStatusText = "已刪除路徑第 ${index + 1} 個點"
+        restartRouteCruiseAfterRouteChange()
+    }
+
+    private fun deleteAreaPolygonPoint(index: Int) {
+        if (index !in areaPolygonPoints.indices) {
+            return
+        }
+        areaPolygonPoints.removeAt(index)
         generatedAreaWaypoints.clear()
         operationError = null
-        mockStatusText = "已清除路徑"
+        mockStatusText = "已刪除範圍第 ${index + 1} 個點"
+        if (isAreaCruising) {
+            stopCruise()
+            operationError = "範圍點已變更，已停止區域巡航。"
+        }
+    }
+
+    private fun undoLastMapPoint() {
+        when (mapEditMode) {
+            MapEditMode.ROUTE -> {
+                if (routeWaypoints.isNotEmpty()) {
+                    deleteRouteWaypoint(routeWaypoints.lastIndex)
+                }
+            }
+
+            MapEditMode.AREA -> {
+                if (areaPolygonPoints.isNotEmpty()) {
+                    deleteAreaPolygonPoint(areaPolygonPoints.lastIndex)
+                }
+            }
+        }
+    }
+
+    private fun clearRouteWaypoints() {
+        if (isRouteCruising) {
+            stopCruise()
+        }
+        routeWaypoints.clear()
+        operationError = null
+        mockStatusText = "已清除全部路徑"
+    }
+
+    private fun clearAreaPolygon() {
+        if (isAreaCruising) {
+            stopCruise()
+        }
+        areaPolygonPoints.clear()
+        generatedAreaWaypoints.clear()
+        operationError = null
+        mockStatusText = "已清除全部範圍"
     }
 
     private fun generateAreaRoute() {
-        if (routeWaypoints.size < 3) {
-            operationError = "請先在地圖上點選至少 3 個座標點作為範圍。"
+        if (areaPolygonPoints.size < 3) {
+            operationError = "請先切換到區域圈選，並在地圖上點選至少 3 個範圍點。"
             return
         }
 
         val count = Random.nextInt(10, 51)
         val generated = runCatching {
-            generateRandomWaypointsInPolygon(routeWaypoints, count)
+            generateRandomWaypointsInPolygon(areaPolygonPoints, count)
         }.getOrElse {
             operationError = "產生區域路徑失敗，請重新圈選較大的區域。"
             return
@@ -722,7 +844,11 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        val simulator = RouteSimulator(waypoints, routeEndBehavior)
+        val simulator = RouteSimulator(
+            waypoints = waypoints,
+            endBehavior = routeEndBehavior,
+            startPosition = initial
+        )
         isRouteCruising = mode == MockMode.ROUTE_CRUISE
         isAreaCruising = mode == MockMode.AREA_CRUISE
         operationError = null
@@ -783,6 +909,19 @@ class MainActivity : ComponentActivity() {
             currentSpeedMetersPerSecond = 0f
             mockStatusText = "已停止巡航"
         }
+    }
+
+    private fun restartRouteCruiseAfterRouteChange() {
+        if (!isRouteCruising) {
+            return
+        }
+        if (routeWaypoints.size < 2) {
+            stopCruise()
+            operationError = "路徑點少於 2 個，已自動停止路徑巡航。"
+            return
+        }
+        startCruise(routeWaypoints.toList(), MockMode.ROUTE_CRUISE)
+        mockStatusText = "路徑已更新，巡航已從最近點續行"
     }
 
     private fun parseLocationInputs(): ParsedLocationInput? {
@@ -1012,8 +1151,11 @@ private fun MockLocationTesterScreen(
     isWalking: Boolean,
     isRouteCruising: Boolean,
     isAreaCruising: Boolean,
+    hasLastMockLocation: Boolean,
+    mapEditMode: MapEditMode,
     mapRecenterRequest: Int,
     routeWaypoints: List<LatLng>,
+    areaPolygonPoints: List<LatLng>,
     generatedAreaWaypoints: List<LatLng>,
     isConsumerRunning: Boolean,
     gpsConsumerLocation: ConsumerLocationUi?,
@@ -1027,8 +1169,11 @@ private fun MockLocationTesterScreen(
     onRouteSpeedChange: (Float) -> Unit,
     onAreaSpeedChange: (Float) -> Unit,
     onRouteEndBehaviorChange: (RouteEndBehavior) -> Unit,
+    onMapEditModeChange: (MapEditMode) -> Unit,
     onApplyStartLocation: () -> Unit,
+    onUseLastMockLocationAsStart: () -> Unit,
     onUseCurrentPhoneLocationAsStart: () -> Unit,
+    onClearLastMockLocation: () -> Unit,
     onPushCurrentLocation: () -> Unit,
     onStartWalking: () -> Unit,
     onStopWalking: () -> Unit,
@@ -1039,7 +1184,11 @@ private fun MockLocationTesterScreen(
     onJoystickChange: (Float, Float) -> Unit,
     onJoystickRelease: () -> Unit,
     onMapClick: (LatLng) -> Unit,
+    onDeleteRouteWaypoint: (Int) -> Unit,
+    onDeleteAreaPolygonPoint: (Int) -> Unit,
+    onUndoLastMapPoint: () -> Unit,
     onClearRoute: () -> Unit,
+    onClearAreaPolygon: () -> Unit,
     onGenerateAreaRoute: () -> Unit,
     onStartRouteCruise: () -> Unit,
     onStartAreaCruise: () -> Unit,
@@ -1068,28 +1217,28 @@ private fun MockLocationTesterScreen(
                 }
             }
 
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                CommonStatusSections(
-                    permissionStatusText = permissionStatusText,
-                    overlayPermissionStatusText = overlayPermissionStatusText,
-                    isMockLocationAppSelected = isMockLocationAppSelected,
-                    hasOverlayPermission = hasOverlayPermission,
-                    activeModeText = activeModeText,
-                    mockStatusText = mockStatusText,
-                    overlayStatusText = overlayStatusText,
-                    errorMessages = errorMessages,
-                    onRequestPermissions = onRequestPermissions,
-                    onOpenOverlayPermissionSettings = onOpenOverlayPermissionSettings
-                )
-
-                when (selectedTab) {
-                    MainTab.MANUAL -> ManualControlTab(
+            when (selectedTab) {
+                MainTab.MANUAL -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        CommonStatusSections(
+                            permissionStatusText = permissionStatusText,
+                            overlayPermissionStatusText = overlayPermissionStatusText,
+                            isMockLocationAppSelected = isMockLocationAppSelected,
+                            hasOverlayPermission = hasOverlayPermission,
+                            activeModeText = activeModeText,
+                            mockStatusText = mockStatusText,
+                            overlayStatusText = overlayStatusText,
+                            errorMessages = errorMessages,
+                            onRequestPermissions = onRequestPermissions,
+                            onOpenOverlayPermissionSettings = onOpenOverlayPermissionSettings
+                        )
+                        ManualControlTab(
                         latitudeInput = latitudeInput,
                         longitudeInput = longitudeInput,
                         accuracyInput = accuracyInput,
@@ -1100,6 +1249,7 @@ private fun MockLocationTesterScreen(
                         currentSpeedMetersPerSecond = currentSpeedMetersPerSecond,
                         currentBearingDegrees = currentBearingDegrees,
                         isWalking = isWalking,
+                        hasLastMockLocation = hasLastMockLocation,
                         isConsumerRunning = isConsumerRunning,
                         gpsConsumerLocation = gpsConsumerLocation,
                         networkConsumerLocation = networkConsumerLocation,
@@ -1109,7 +1259,9 @@ private fun MockLocationTesterScreen(
                         onAccuracyInputChange = onAccuracyInputChange,
                         onMaxSpeedChange = onMaxSpeedChange,
                         onApplyStartLocation = onApplyStartLocation,
+                        onUseLastMockLocationAsStart = onUseLastMockLocationAsStart,
                         onUseCurrentPhoneLocationAsStart = onUseCurrentPhoneLocationAsStart,
+                        onClearLastMockLocation = onClearLastMockLocation,
                         onPushCurrentLocation = onPushCurrentLocation,
                         onStartWalking = onStartWalking,
                         onStopWalking = onStopWalking,
@@ -1119,9 +1271,26 @@ private fun MockLocationTesterScreen(
                         onJoystickRelease = onJoystickRelease,
                         onStartConsumer = onStartConsumer,
                         onStopConsumer = onStopConsumer
-                    )
+                        )
+                    }
+                }
 
-                    MainTab.MAP -> MapPatrolTab(
+                MainTab.MAP -> MapPatrolTab(
+                    modifier = Modifier.weight(1f),
+                    statusContent = {
+                        CommonStatusSections(
+                            permissionStatusText = permissionStatusText,
+                            overlayPermissionStatusText = overlayPermissionStatusText,
+                            isMockLocationAppSelected = isMockLocationAppSelected,
+                            hasOverlayPermission = hasOverlayPermission,
+                            activeModeText = activeModeText,
+                            mockStatusText = mockStatusText,
+                            overlayStatusText = overlayStatusText,
+                            errorMessages = errorMessages,
+                            onRequestPermissions = onRequestPermissions,
+                            onOpenOverlayPermissionSettings = onOpenOverlayPermissionSettings
+                        )
+                    },
                         currentLatitude = currentLatitude,
                         currentLongitude = currentLongitude,
                         currentAccuracyMeters = currentAccuracyMeters,
@@ -1130,23 +1299,32 @@ private fun MockLocationTesterScreen(
                         routeSpeedKmh = routeSpeedKmh,
                         areaSpeedKmh = areaSpeedKmh,
                         routeEndBehavior = routeEndBehavior,
+                        mapEditMode = mapEditMode,
                         routeWaypoints = routeWaypoints,
+                        areaPolygonPoints = areaPolygonPoints,
                         generatedAreaWaypoints = generatedAreaWaypoints,
                         isRouteCruising = isRouteCruising,
                         isAreaCruising = isAreaCruising,
+                        hasLastMockLocation = hasLastMockLocation,
                         mapRecenterRequest = mapRecenterRequest,
                         onRouteSpeedChange = onRouteSpeedChange,
                         onAreaSpeedChange = onAreaSpeedChange,
                         onRouteEndBehaviorChange = onRouteEndBehaviorChange,
+                        onMapEditModeChange = onMapEditModeChange,
+                        onUseLastMockLocationAsStart = onUseLastMockLocationAsStart,
                         onUseCurrentPhoneLocationAsStart = onUseCurrentPhoneLocationAsStart,
+                        onClearLastMockLocation = onClearLastMockLocation,
                         onMapClick = onMapClick,
+                        onDeleteRouteWaypoint = onDeleteRouteWaypoint,
+                        onDeleteAreaPolygonPoint = onDeleteAreaPolygonPoint,
+                        onUndoLastMapPoint = onUndoLastMapPoint,
                         onClearRoute = onClearRoute,
+                        onClearAreaPolygon = onClearAreaPolygon,
                         onGenerateAreaRoute = onGenerateAreaRoute,
                         onStartRouteCruise = onStartRouteCruise,
                         onStartAreaCruise = onStartAreaCruise,
                         onStopCruise = onStopCruise
-                    )
-                }
+                )
             }
         }
     }
@@ -1197,6 +1375,7 @@ private fun ManualControlTab(
     currentSpeedMetersPerSecond: Float,
     currentBearingDegrees: Float,
     isWalking: Boolean,
+    hasLastMockLocation: Boolean,
     isConsumerRunning: Boolean,
     gpsConsumerLocation: ConsumerLocationUi?,
     networkConsumerLocation: ConsumerLocationUi?,
@@ -1206,7 +1385,9 @@ private fun ManualControlTab(
     onAccuracyInputChange: (String) -> Unit,
     onMaxSpeedChange: (Float) -> Unit,
     onApplyStartLocation: () -> Unit,
+    onUseLastMockLocationAsStart: () -> Unit,
     onUseCurrentPhoneLocationAsStart: () -> Unit,
+    onClearLastMockLocation: () -> Unit,
     onPushCurrentLocation: () -> Unit,
     onStartWalking: () -> Unit,
     onStopWalking: () -> Unit,
@@ -1245,8 +1426,22 @@ private fun ManualControlTab(
         Button(onClick = onApplyStartLocation, modifier = Modifier.fillMaxWidth()) {
             Text("套用起始座標")
         }
+        OutlinedButton(
+            onClick = onUseLastMockLocationAsStart,
+            enabled = hasLastMockLocation,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("使用最後位置作為起點")
+        }
         OutlinedButton(onClick = onUseCurrentPhoneLocationAsStart, modifier = Modifier.fillMaxWidth()) {
-            Text("使用目前位置作為起點")
+            Text("使用目前手機位置作為起點")
+        }
+        OutlinedButton(
+            onClick = onClearLastMockLocation,
+            enabled = hasLastMockLocation,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("清除最後位置")
         }
     }
 
@@ -1301,8 +1496,15 @@ private fun ManualControlTab(
     }
 
     Section(title = "懸浮搖桿") {
+        OutlinedButton(
+            onClick = onUseLastMockLocationAsStart,
+            enabled = hasLastMockLocation,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("使用最後位置作為起點")
+        }
         OutlinedButton(onClick = onUseCurrentPhoneLocationAsStart, modifier = Modifier.fillMaxWidth()) {
-            Text("使用目前位置作為起點")
+            Text("使用目前手機位置作為起點")
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             Button(
@@ -1348,6 +1550,8 @@ private fun ManualControlTab(
 
 @Composable
 private fun MapPatrolTab(
+    modifier: Modifier = Modifier,
+    statusContent: @Composable () -> Unit,
     currentLatitude: Double,
     currentLongitude: Double,
     currentAccuracyMeters: Float,
@@ -1356,127 +1560,249 @@ private fun MapPatrolTab(
     routeSpeedKmh: Float,
     areaSpeedKmh: Float,
     routeEndBehavior: RouteEndBehavior,
+    mapEditMode: MapEditMode,
     routeWaypoints: List<LatLng>,
+    areaPolygonPoints: List<LatLng>,
     generatedAreaWaypoints: List<LatLng>,
     isRouteCruising: Boolean,
     isAreaCruising: Boolean,
+    hasLastMockLocation: Boolean,
     mapRecenterRequest: Int,
     onRouteSpeedChange: (Float) -> Unit,
     onAreaSpeedChange: (Float) -> Unit,
     onRouteEndBehaviorChange: (RouteEndBehavior) -> Unit,
+    onMapEditModeChange: (MapEditMode) -> Unit,
+    onUseLastMockLocationAsStart: () -> Unit,
     onUseCurrentPhoneLocationAsStart: () -> Unit,
+    onClearLastMockLocation: () -> Unit,
     onMapClick: (LatLng) -> Unit,
+    onDeleteRouteWaypoint: (Int) -> Unit,
+    onDeleteAreaPolygonPoint: (Int) -> Unit,
+    onUndoLastMapPoint: () -> Unit,
     onClearRoute: () -> Unit,
+    onClearAreaPolygon: () -> Unit,
     onGenerateAreaRoute: () -> Unit,
     onStartRouteCruise: () -> Unit,
     onStartAreaCruise: () -> Unit,
     onStopCruise: () -> Unit
 ) {
-    Section(title = "目前位置") {
-        InfoRow(label = "緯度", value = formatNumber(currentLatitude, 7))
-        InfoRow(label = "經度", value = formatNumber(currentLongitude, 7))
-        InfoRow(label = "精度", value = "${formatNumber(currentAccuracyMeters.toDouble(), 1)} 公尺")
-        InfoRow(label = "速度", value = "目前速度：${formatNumber((currentSpeedMetersPerSecond * KMH_PER_MPS).toDouble(), 1)} km/h")
-        InfoRow(label = "方向角", value = "${formatNumber(currentBearingDegrees.toDouble(), 1)} 度")
-    }
+    var selectedPoint by remember { mutableStateOf<MapPointSelection?>(null) }
 
-    Section(title = "地圖繞行模式") {
-        OutlinedButton(onClick = onUseCurrentPhoneLocationAsStart, modifier = Modifier.fillMaxWidth()) {
-            Text("使用目前位置作為起點")
-        }
+    Column(
+        modifier = modifier.padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
         RouteMapView(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(300.dp),
             currentPosition = LatLng(currentLatitude, currentLongitude),
             routeWaypoints = routeWaypoints,
+            areaPolygonPoints = areaPolygonPoints,
             generatedWaypoints = generatedAreaWaypoints,
             externalRecenterRequest = mapRecenterRequest,
-            onMapClick = onMapClick
+            onMapClick = onMapClick,
+            onMapPointClick = { selectedPoint = it }
         )
-        InfoRow(label = "已選座標點", value = "${routeWaypoints.size} 個")
-        InfoRow(label = "區域路徑點", value = "${generatedAreaWaypoints.size} 個")
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            itemsIndexed(routeWaypoints) { index, point ->
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            statusContent()
+
+            selectedPoint?.let { selection ->
+                SelectedMapPointPanel(
+                    selection = selection,
+                    onDelete = {
+                        when (selection.type) {
+                            MapPointType.ROUTE -> onDeleteRouteWaypoint(selection.index)
+                            MapPointType.AREA -> onDeleteAreaPolygonPoint(selection.index)
+                        }
+                        selectedPoint = null
+                    },
+                    onCancel = { selectedPoint = null }
+                )
+            }
+
+            Section(title = "目前位置") {
+                InfoRow(label = "緯度", value = formatNumber(currentLatitude, 7))
+                InfoRow(label = "經度", value = formatNumber(currentLongitude, 7))
+                InfoRow(label = "精度", value = "${formatNumber(currentAccuracyMeters.toDouble(), 1)} 公尺")
+                InfoRow(label = "速度", value = "目前速度：${formatNumber((currentSpeedMetersPerSecond * KMH_PER_MPS).toDouble(), 1)} km/h")
+                InfoRow(label = "方向角", value = "${formatNumber(currentBearingDegrees.toDouble(), 1)} 度")
+            }
+
+            Section(title = "地圖操作") {
+                InfoRow(label = "目前模式", value = mapEditMode.title)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    EndBehaviorButton(
+                        text = "路徑選點",
+                        selected = mapEditMode == MapEditMode.ROUTE,
+                        onClick = { onMapEditModeChange(MapEditMode.ROUTE) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    EndBehaviorButton(
+                        text = "區域圈選",
+                        selected = mapEditMode == MapEditMode.AREA,
+                        onClick = { onMapEditModeChange(MapEditMode.AREA) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                OutlinedButton(onClick = onUndoLastMapPoint, modifier = Modifier.fillMaxWidth()) {
+                    Text("復原上一個點")
+                }
+                OutlinedButton(
+                    onClick = onUseLastMockLocationAsStart,
+                    enabled = hasLastMockLocation,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = "${index + 1}：${formatNumber(point.latitude, 5)}, ${formatNumber(point.longitude, 5)}",
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                        style = MaterialTheme.typography.bodySmall
+                    Text("使用最後位置作為起點")
+                }
+                OutlinedButton(onClick = onUseCurrentPhoneLocationAsStart, modifier = Modifier.fillMaxWidth()) {
+                    Text("使用目前手機位置作為起點")
+                }
+                OutlinedButton(
+                    onClick = onClearLastMockLocation,
+                    enabled = hasLastMockLocation,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("清除最後位置")
+                }
+            }
+
+            Section(title = "路徑選點") {
+                InfoRow(label = "路徑點", value = "${routeWaypoints.size} 個")
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    itemsIndexed(routeWaypoints) { index, point ->
+                        PointChip(index = index, point = point)
+                    }
+                }
+                OutlinedButton(onClick = onClearRoute, modifier = Modifier.fillMaxWidth()) {
+                    Text("清除全部路徑")
+                }
+            }
+
+            Section(title = "區域圈選") {
+                InfoRow(label = "範圍點", value = "${areaPolygonPoints.size} 個")
+                InfoRow(label = "區域路徑點", value = "${generatedAreaWaypoints.size} 個")
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    itemsIndexed(areaPolygonPoints) { index, point ->
+                        PointChip(index = index, point = point)
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = onClearAreaPolygon, modifier = Modifier.weight(1f)) {
+                        Text("清除全部範圍", textAlign = TextAlign.Center)
+                    }
+                    Button(
+                        onClick = onGenerateAreaRoute,
+                        enabled = areaPolygonPoints.size >= 3,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("產生區域路徑", textAlign = TextAlign.Center)
+                    }
+                }
+            }
+
+            Section(title = "巡航設定") {
+                InfoRow(label = "路徑巡航速度", value = "目前速度：${formatNumber(routeSpeedKmh.toDouble(), 1)} km/h")
+                Slider(
+                    value = routeSpeedKmh,
+                    onValueChange = onRouteSpeedChange,
+                    valueRange = 1f..100f
+                )
+                InfoRow(label = "區域巡航速度", value = "目前速度：${formatNumber(areaSpeedKmh.toDouble(), 1)} km/h")
+                Slider(
+                    value = areaSpeedKmh,
+                    onValueChange = onAreaSpeedChange,
+                    valueRange = 1f..100f
+                )
+                Text(text = "結束方式", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    EndBehaviorButton(
+                        text = "停止",
+                        selected = routeEndBehavior == RouteEndBehavior.STOP,
+                        onClick = { onRouteEndBehaviorChange(RouteEndBehavior.STOP) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    EndBehaviorButton(
+                        text = "循環",
+                        selected = routeEndBehavior == RouteEndBehavior.LOOP,
+                        onClick = { onRouteEndBehaviorChange(RouteEndBehavior.LOOP) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    EndBehaviorButton(
+                        text = "折返",
+                        selected = routeEndBehavior == RouteEndBehavior.PING_PONG,
+                        onClick = { onRouteEndBehaviorChange(RouteEndBehavior.PING_PONG) },
+                        modifier = Modifier.weight(1f)
                     )
                 }
             }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(onClick = onClearRoute, modifier = Modifier.weight(1f)) {
-                Text("清除路徑")
-            }
-            Button(onClick = onGenerateAreaRoute, modifier = Modifier.weight(1f)) {
-                Text("產生區域路徑")
+
+            Section(title = "巡航控制") {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = onStartRouteCruise,
+                        enabled = !isRouteCruising && !isAreaCruising,
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                    ) {
+                        Text("開始路徑巡航", textAlign = TextAlign.Center)
+                    }
+                    Button(
+                        onClick = onStartAreaCruise,
+                        enabled = !isRouteCruising && !isAreaCruising && generatedAreaWaypoints.size >= 2,
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                    ) {
+                        Text("開始區域巡航", textAlign = TextAlign.Center)
+                    }
+                }
+                OutlinedButton(
+                    onClick = onStopCruise,
+                    enabled = isRouteCruising || isAreaCruising,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("停止巡航")
+                }
             }
         }
     }
+}
 
-    Section(title = "巡航設定") {
-        InfoRow(label = "路徑巡航速度", value = "目前速度：${formatNumber(routeSpeedKmh.toDouble(), 1)} km/h")
-        Slider(
-            value = routeSpeedKmh,
-            onValueChange = onRouteSpeedChange,
-            valueRange = 1f..100f
-        )
-        InfoRow(label = "區域巡航速度", value = "目前速度：${formatNumber(areaSpeedKmh.toDouble(), 1)} km/h")
-        Slider(
-            value = areaSpeedKmh,
-            onValueChange = onAreaSpeedChange,
-            valueRange = 1f..100f
-        )
-        Text(text = "結束方式", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            EndBehaviorButton(
-                text = "停止",
-                selected = routeEndBehavior == RouteEndBehavior.STOP,
-                onClick = { onRouteEndBehaviorChange(RouteEndBehavior.STOP) },
-                modifier = Modifier.weight(1f)
-            )
-            EndBehaviorButton(
-                text = "循環",
-                selected = routeEndBehavior == RouteEndBehavior.LOOP,
-                onClick = { onRouteEndBehaviorChange(RouteEndBehavior.LOOP) },
-                modifier = Modifier.weight(1f)
-            )
-            EndBehaviorButton(
-                text = "折返",
-                selected = routeEndBehavior == RouteEndBehavior.PING_PONG,
-                onClick = { onRouteEndBehaviorChange(RouteEndBehavior.PING_PONG) },
-                modifier = Modifier.weight(1f)
-            )
+@Composable
+private fun SelectedMapPointPanel(
+    selection: MapPointSelection,
+    onDelete: () -> Unit,
+    onCancel: () -> Unit
+) {
+    Section(title = if (selection.type == MapPointType.ROUTE) "路徑點操作" else "範圍點操作") {
+        Text("第 ${selection.index + 1} 個點", style = MaterialTheme.typography.bodyMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = onDelete, modifier = Modifier.weight(1f)) {
+                Text("刪除此點")
+            }
+            OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) {
+                Text("取消")
+            }
         }
     }
+}
 
-    Section(title = "巡航控制") {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            Button(
-                onClick = onStartRouteCruise,
-                enabled = !isRouteCruising && !isAreaCruising,
-                modifier = Modifier.weight(1f).heightIn(min = 48.dp)
-            ) {
-                Text("開始路徑巡航", textAlign = TextAlign.Center)
-            }
-            Button(
-                onClick = onStartAreaCruise,
-                enabled = !isRouteCruising && !isAreaCruising,
-                modifier = Modifier.weight(1f).heightIn(min = 48.dp)
-            ) {
-                Text("開始區域巡航", textAlign = TextAlign.Center)
-            }
-        }
-        OutlinedButton(
-            onClick = onStopCruise,
-            enabled = isRouteCruising || isAreaCruising,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("停止巡航")
-        }
+@Composable
+private fun PointChip(index: Int, point: LatLng) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Text(
+            text = "${index + 1}：${formatNumber(point.latitude, 5)}, ${formatNumber(point.longitude, 5)}",
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            style = MaterialTheme.typography.bodySmall
+        )
     }
 }
 
@@ -1500,11 +1826,14 @@ private fun EndBehaviorButton(
 
 @Composable
 private fun RouteMapView(
+    modifier: Modifier = Modifier,
     currentPosition: LatLng,
     routeWaypoints: List<LatLng>,
+    areaPolygonPoints: List<LatLng>,
     generatedWaypoints: List<LatLng>,
     externalRecenterRequest: Int,
-    onMapClick: (LatLng) -> Unit
+    onMapClick: (LatLng) -> Unit,
+    onMapPointClick: (MapPointSelection) -> Unit
 ) {
     var hasInitializedCamera by rememberSaveable { mutableStateOf(false) }
     var userMovedCamera by rememberSaveable { mutableStateOf(false) }
@@ -1547,9 +1876,7 @@ private fun RouteMapView(
         }
 
         AndroidView(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(360.dp),
+            modifier = modifier,
             factory = { context ->
                 MapView(context).apply {
                     setTileSource(TileSourceFactory.MAPNIK)
@@ -1581,14 +1908,29 @@ private fun RouteMapView(
             },
             update = { map ->
                 map.overlays.clear()
+                map.overlays.add(MapTapOverlay(onMapClick))
 
                 if (routeWaypoints.size >= 2) {
-                    val polygonLine = Polyline().apply {
+                    val routeLine = Polyline().apply {
                         setPoints(routeWaypoints.map { GeoPoint(it.latitude, it.longitude) })
                         outlinePaint.color = Color.rgb(80, 120, 220)
                         outlinePaint.strokeWidth = 4f
                     }
-                    map.overlays.add(polygonLine)
+                    map.overlays.add(routeLine)
+                }
+
+                if (areaPolygonPoints.size >= 2) {
+                    val polygonPoints = areaPolygonPoints.map { GeoPoint(it.latitude, it.longitude) }.toMutableList()
+                    if (areaPolygonPoints.size >= 3) {
+                        val first = areaPolygonPoints.first()
+                        polygonPoints.add(GeoPoint(first.latitude, first.longitude))
+                    }
+                    val areaLine = Polyline().apply {
+                        setPoints(polygonPoints)
+                        outlinePaint.color = Color.rgb(40, 150, 90)
+                        outlinePaint.strokeWidth = 4f
+                    }
+                    map.overlays.add(areaLine)
                 }
 
                 if (generatedWaypoints.size >= 2) {
@@ -1604,9 +1946,28 @@ private fun RouteMapView(
                     map.overlays.add(
                         Marker(map).apply {
                             position = GeoPoint(point.latitude, point.longitude)
-                            title = "座標點 ${index + 1}"
+                            title = "路徑點 ${index + 1}"
                             icon = numberedMarkerIcon(map.context, index + 1, Color.rgb(60, 110, 210))
                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                            setOnMarkerClickListener { _, _ ->
+                                onMapPointClick(MapPointSelection(MapPointType.ROUTE, index))
+                                true
+                            }
+                        }
+                    )
+                }
+
+                areaPolygonPoints.forEachIndexed { index, point ->
+                    map.overlays.add(
+                        Marker(map).apply {
+                            position = GeoPoint(point.latitude, point.longitude)
+                            title = "範圍點 ${index + 1}"
+                            icon = numberedMarkerIcon(map.context, index + 1, Color.rgb(40, 150, 90))
+                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                            setOnMarkerClickListener { _, _ ->
+                                onMapPointClick(MapPointSelection(MapPointType.AREA, index))
+                                true
+                            }
                         }
                     )
                 }
@@ -1631,7 +1992,6 @@ private fun RouteMapView(
                     }
                 )
 
-                map.overlays.add(MapTapOverlay(onMapClick))
                 val currentGeoPoint = GeoPoint(currentPosition.latitude, currentPosition.longitude)
                 val handledRecenterRequest = map.tag as? Int
                 when {
@@ -1985,3 +2345,18 @@ private enum class MainTab(val title: String) {
     MANUAL("手動控制"),
     MAP("地圖繞行模式")
 }
+
+private enum class MapEditMode(val title: String) {
+    ROUTE("路徑選點"),
+    AREA("區域圈選")
+}
+
+private enum class MapPointType {
+    ROUTE,
+    AREA
+}
+
+private data class MapPointSelection(
+    val type: MapPointType,
+    val index: Int
+)
