@@ -208,6 +208,21 @@ fun normalizeBearing(bearingDeg: Float): Float {
     return if (normalized < 0f) normalized + 360f else normalized
 }
 
+fun isValidLatLng(latitude: Double, longitude: Double): Boolean {
+    return latitude.isFinite() &&
+        longitude.isFinite() &&
+        latitude in -90.0..90.0 &&
+        longitude in -180.0..180.0
+}
+
+fun sanitizeAccuracyMeters(accuracyMeters: Float): Float {
+    return if (accuracyMeters.isFinite()) {
+        accuracyMeters.coerceIn(1f, 10000f)
+    } else {
+        5f
+    }
+}
+
 private fun nearestNeighborSort(points: List<LatLng>): List<LatLng> {
     if (points.size <= 2) {
         return points

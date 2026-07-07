@@ -25,14 +25,14 @@ data class LastMockLocationState(
 
             val latitude = Double.fromBits(prefs.getLong(KEY_LATITUDE, 0L))
             val longitude = Double.fromBits(prefs.getLong(KEY_LONGITUDE, 0L))
-            if (!latitude.isFinite() || latitude !in -90.0..90.0 || !longitude.isFinite()) {
+            if (!isValidLatLng(latitude, longitude)) {
                 clear(context)
                 return null
             }
 
             return LastMockLocationState(
                 latitude = latitude,
-                longitude = normalizeLongitude(longitude),
+                longitude = longitude,
                 speedMetersPerSecond = prefs.getFloat(KEY_SPEED, 0f).coerceAtLeast(0f),
                 bearingDegrees = normalizeBearing(prefs.getFloat(KEY_BEARING, 0f)),
                 timestampMillis = prefs.getLong(KEY_TIMESTAMP, 0L)
@@ -47,14 +47,14 @@ data class LastMockLocationState(
             bearingDegrees: Float,
             timestampMillis: Long = System.currentTimeMillis()
         ) {
-            if (!latitude.isFinite() || latitude !in -90.0..90.0 || !longitude.isFinite()) {
+            if (!isValidLatLng(latitude, longitude)) {
                 return
             }
 
             context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
                 .putLong(KEY_LATITUDE, latitude.toRawBits())
-                .putLong(KEY_LONGITUDE, normalizeLongitude(longitude).toRawBits())
+                .putLong(KEY_LONGITUDE, longitude.toRawBits())
                 .putFloat(KEY_SPEED, speedMetersPerSecond.coerceAtLeast(0f))
                 .putFloat(KEY_BEARING, normalizeBearing(bearingDegrees))
                 .putLong(KEY_TIMESTAMP, timestampMillis)

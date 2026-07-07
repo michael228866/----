@@ -87,10 +87,17 @@ object MockLocationController {
         longitude: Double = currentLng,
         accuracyMeters: Float = currentAccuracy
     ): MockPushResult {
+        if (!isValidLatLng(latitude, longitude)) {
+            return MockPushResult(
+                success = false,
+                message = "座標無效，緯度需介於 -90 到 90，經度需介於 -180 到 180。"
+            )
+        }
+
         activeMode = mode
         currentLat = latitude
         currentLng = longitude
-        currentAccuracy = accuracyMeters
+        currentAccuracy = sanitizeAccuracyMeters(accuracyMeters)
         currentSpeed = 0f
         persistAndBroadcast(context)
         return ensureTestProvider(context)
@@ -146,6 +153,12 @@ object MockLocationController {
                 message = "另一個模式正在送出模擬定位，請先停止目前模式。"
             )
         }
+        if (!isValidLatLng(latitude, longitude)) {
+            return MockPushResult(
+                success = false,
+                message = "座標無效，緯度需介於 -90 到 90，經度需介於 -180 到 180。"
+            )
+        }
 
         val providerResult = ensureTestProvider(context)
         if (configuredProviders.isEmpty()) {
@@ -153,7 +166,7 @@ object MockLocationController {
         }
 
         val manager = locationManager(context)
-        val normalizedLongitude = normalizeLongitude(longitude)
+        val safeAccuracyMeters = sanitizeAccuracyMeters(accuracyMeters)
         val normalizedBearing = normalizeBearing(bearingDegrees).toFloat()
         val normalizedSpeed = speedMetersPerSecond.coerceAtLeast(0f)
         val timeMillis = System.currentTimeMillis()
@@ -165,8 +178,8 @@ object MockLocationController {
             val location = createLocation(
                 provider = provider,
                 latitude = latitude,
-                longitude = normalizedLongitude,
-                accuracyMeters = accuracyMeters,
+                longitude = longitude,
+                accuracyMeters = safeAccuracyMeters,
                 speedMetersPerSecond = normalizedSpeed,
                 bearingDegrees = normalizedBearing,
                 timeMillis = timeMillis,
@@ -190,8 +203,8 @@ object MockLocationController {
         return if (pushedAnyProvider) {
             activeMode = mode
             currentLat = latitude
-            currentLng = normalizedLongitude
-            currentAccuracy = accuracyMeters
+            currentLng = longitude
+            currentAccuracy = safeAccuracyMeters
             currentSpeed = normalizedSpeed
             currentBearing = normalizedBearing
             LastMockLocationState.save(
@@ -242,15 +255,28 @@ object MockLocationController {
             prefs.contains(PREF_LATITUDE) &&
             prefs.contains(PREF_LONGITUDE)
         ) {
-            currentLat = Double.fromBits(prefs.getLong(PREF_LATITUDE, currentLat.toRawBits()))
-            currentLng = Double.fromBits(prefs.getLong(PREF_LONGITUDE, currentLng.toRawBits()))
-            currentAccuracy = prefs.getFloat(PREF_ACCURACY, currentAccuracy)
-            currentSpeed = prefs.getFloat(PREF_SPEED, currentSpeed)
-            currentBearing = prefs.getFloat(PREF_BEARING, currentBearing)
-            activeMode = persistedMode
+            val persistedLatitude = Double.fromBits(prefs.getLong(PREF_LATITUDE, currentLat.toRawBits()))
+            val persistedLongitude = Double.fromBits(prefs.getLong(PREF_LONGITUDE, currentLng.toRawBits()))
+            if (isValidLatLng(persistedLatitude, persistedLongitude)) {
+                currentLat = persistedLatitude
+                currentLng = persistedLongitude
+                currentAccuracy = sanitizeAccuracyMeters(prefs.getFloat(PREF_ACCURACY, currentAccuracy))
+                currentSpeed = prefs.getFloat(PREF_SPEED, currentSpeed).coerceAtLeast(0f)
+                currentBearing = normalizeBearing(prefs.getFloat(PREF_BEARING, currentBearing))
+                activeMode = persistedMode
+            } else {
+                clearLastMockLocation(context)
+                currentLat = 25.033964
+                currentLng = 121.564468
+                currentAccuracy = 5f
+                currentSpeed = 0f
+                currentBearing = 0f
+                activeMode = MockMode.IDLE
+            }
         } else {
             currentLat = 25.033964
             currentLng = 121.564468
+            currentAccuracy = 5f
             currentSpeed = 0f
             currentBearing = 0f
             activeMode = MockMode.IDLE

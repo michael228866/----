@@ -109,6 +109,8 @@ import kotlin.random.Random
 
 private const val MOCK_APP_NOT_SELECTED_MESSAGE =
     "請先到開發人員選項，將本程式設定為「模擬位置應用程式」。"
+private const val TAIPEI_101_LATITUDE = 25.033964
+private const val TAIPEI_101_LONGITUDE = 121.564468
 const val KMH_PER_MPS = 3.6f
 
 class MainActivity : ComponentActivity() {
@@ -254,7 +256,9 @@ class MainActivity : ComponentActivity() {
                     onAreaRouteModeChange = { areaRouteMode = it },
                     onUseLastMockLocationAsStart = ::useLastMockLocationAsStart,
                     onUseCurrentPhoneLocationAsStart = ::useCurrentPhoneLocationAsStart,
+                    onApplySpecifiedCoordinate = ::applySpecifiedCoordinate,
                     onClearLastMockLocation = ::clearLastMockLocation,
+                    onResetToTaipei101 = ::resetToTaipei101,
                     onHoldPosition = ::startHoldPosition,
                     onStopMockLocation = ::stopMockLocation,
                     onRequestPermissions = ::requestLocationPermissions,
@@ -435,6 +439,44 @@ class MainActivity : ComponentActivity() {
         return mode == AppOpsManager.MODE_ALLOWED
     }
 
+    private fun applySpecifiedCoordinate(
+        latitudeText: String,
+        longitudeText: String,
+        accuracyText: String
+    ) {
+        val latitude = latitudeText.trim().toDoubleOrNull()
+        val longitude = longitudeText.trim().toDoubleOrNull()
+        val accuracyMeters = accuracyText.trim().toFloatOrNull()
+        if (latitude == null ||
+            longitude == null ||
+            accuracyMeters == null ||
+            !isValidLatLng(latitude, longitude) ||
+            !accuracyMeters.isFinite() ||
+            accuracyMeters <= 0f
+        ) {
+            operationError = "指定座標無效，緯度需介於 -90～90，經度需介於 -180～180，精度需大於 0。"
+            return
+        }
+
+        currentLatitude = latitude
+        currentLongitude = longitude
+        currentAccuracyMeters = sanitizeAccuracyMeters(accuracyMeters)
+        currentSpeedMetersPerSecond = 0f
+        mapRecenterRequest += 1
+        operationError = null
+        mockStatusText = "已套用指定座標"
+    }
+
+    private fun resetToTaipei101() {
+        currentLatitude = TAIPEI_101_LATITUDE
+        currentLongitude = TAIPEI_101_LONGITUDE
+        currentAccuracyMeters = 5f
+        currentSpeedMetersPerSecond = 0f
+        mapRecenterRequest += 1
+        operationError = null
+        mockStatusText = "已重設為台北 101"
+    }
+
     private fun openOverlayPermissionSettings() {
         val intent = Intent(
             Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -611,7 +653,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startFloatingJoystickService() {
-        currentAccuracyMeters = currentAccuracyMeters.coerceIn(1f, 10000f)
+        if (!isValidLatLng(currentLatitude, currentLongitude)) {
+            operationError = "目前座標無效，請先套用指定座標或使用目前手機位置作為起點"
+            return
+        }
+
+        currentAccuracyMeters = sanitizeAccuracyMeters(currentAccuracyMeters)
         refreshPermissionState()
         refreshMockAppState()
         refreshOverlayPermissionState()
@@ -635,6 +682,8 @@ class MainActivity : ComponentActivity() {
         stopDestinationWalk(holdLastPosition = false)
         requestNotificationPermissionIfNeeded()
 
+        val startText = "懸浮搖桿起點：緯度 ${formatNumber(currentLatitude, 7)}，經度 ${formatNumber(currentLongitude, 7)}"
+        overlayStatusText = startText
         val intent = Intent(this, FloatingJoystickService::class.java).apply {
             action = FloatingJoystickService.ACTION_START
             putExtra(FloatingJoystickService.EXTRA_LATITUDE, currentLatitude)
@@ -643,7 +692,7 @@ class MainActivity : ComponentActivity() {
             putExtra(FloatingJoystickService.EXTRA_MAX_SPEED_KMH, maxSpeedKmh)
         }
         ContextCompat.startForegroundService(this, intent)
-        overlayStatusText = "懸浮搖桿啟動中"
+        mockStatusText = startText
         operationError = null
     }
 
@@ -1276,7 +1325,9 @@ private fun MockLocationTesterScreen(
     onAreaRouteModeChange: (AreaRouteMode) -> Unit,
     onUseLastMockLocationAsStart: () -> Unit,
     onUseCurrentPhoneLocationAsStart: () -> Unit,
+    onApplySpecifiedCoordinate: (String, String, String) -> Unit,
     onClearLastMockLocation: () -> Unit,
+    onResetToTaipei101: () -> Unit,
     onHoldPosition: () -> Unit,
     onStopMockLocation: () -> Unit,
     onRequestPermissions: () -> Unit,
@@ -1356,7 +1407,9 @@ private fun MockLocationTesterScreen(
                             onMaxSpeedChange = onMaxSpeedChange,
                             onUseLastMockLocationAsStart = onUseLastMockLocationAsStart,
                             onUseCurrentPhoneLocationAsStart = onUseCurrentPhoneLocationAsStart,
+                            onApplySpecifiedCoordinate = onApplySpecifiedCoordinate,
                             onClearLastMockLocation = onClearLastMockLocation,
+                            onResetToTaipei101 = onResetToTaipei101,
                             onStopMockLocation = onStopMockLocation,
                             onStartFloatingJoystick = onStartFloatingJoystick,
                             onStopFloatingJoystick = onStopFloatingJoystick,

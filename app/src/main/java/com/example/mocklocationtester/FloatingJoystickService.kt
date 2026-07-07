@@ -14,6 +14,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -25,7 +26,9 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.TextView
 import androidx.core.content.ContextCompat
+import java.util.Locale
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.min
@@ -41,6 +44,7 @@ class FloatingJoystickService : Service() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var overlayView: View? = null
+    private var speedTextView: TextView? = null
     private var currentLatitude = 25.033964
     private var currentLongitude = 121.564468
     private var currentAccuracyMeters = 5f
@@ -83,6 +87,11 @@ class FloatingJoystickService : Service() {
         currentAccuracyMeters = intent?.getFloatExtra(EXTRA_ACCURACY, currentAccuracyMeters)
             ?: currentAccuracyMeters
         maxSpeedKmh = intent?.getFloatExtra(EXTRA_MAX_SPEED_KMH, maxSpeedKmh) ?: maxSpeedKmh
+        if (!isValidLatLng(currentLatitude, currentLongitude)) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        currentAccuracyMeters = sanitizeAccuracyMeters(currentAccuracyMeters)
         maxSpeedKmh = maxSpeedKmh.coerceIn(1f, 100f)
 
         if (!hasRequiredRuntimePermissions() || !Settings.canDrawOverlays(this)) {
@@ -156,6 +165,27 @@ class FloatingJoystickService : Service() {
             elevation = 12f
             setPadding(8.dp(), 8.dp(), 8.dp(), 8.dp())
         }
+        speedTextView = TextView(this).apply {
+            text = formatSpeedText()
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(12.dp(), 4.dp(), 12.dp(), 4.dp())
+            background = GradientDrawable().apply {
+                setColor(Color.argb(185, 18, 20, 24))
+                cornerRadius = 999f
+            }
+        }
+        root.addView(
+            speedTextView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                30.dp(),
+                Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            ).apply {
+                topMargin = 8.dp()
+            }
+        )
 
         val joystickView = FloatingJoystickView(this).apply {
             setJoystickListener { ratio, bearing, released ->
@@ -167,16 +197,23 @@ class FloatingJoystickService : Service() {
                 if (released) {
                     pushCurrentMockLocation()
                 }
+                updateSpeedText()
             }
         }
         root.addView(
             joystickView,
-            FrameLayout.LayoutParams(176.dp(), 176.dp(), Gravity.CENTER)
+            FrameLayout.LayoutParams(
+                176.dp(),
+                176.dp(),
+                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            ).apply {
+                bottomMargin = 10.dp()
+            }
         )
 
         overlayParams = WindowManager.LayoutParams(
             200.dp(),
-            200.dp(),
+            230.dp(),
             overlayWindowType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -199,6 +236,7 @@ class FloatingJoystickService : Service() {
             windowManager.removeView(view)
         }
         overlayView = null
+        speedTextView = null
     }
 
     private fun overlayWindowType(): Int {
@@ -213,6 +251,7 @@ class FloatingJoystickService : Service() {
     private fun tickMockLocation() {
         advanceLocationByElapsedTime()
         pushCurrentMockLocation()
+        updateSpeedText()
     }
 
     private fun advanceLocationByElapsedTime() {
@@ -258,6 +297,26 @@ class FloatingJoystickService : Service() {
             currentLongitude = MockLocationController.currentLng
             currentSpeedMetersPerSecond = MockLocationController.currentSpeed
             currentBearingDegrees = MockLocationController.currentBearing
+        }
+        updateSpeedText()
+    }
+
+    private fun updateSpeedText() {
+        speedTextView?.text = formatSpeedText()
+    }
+
+    private fun formatSpeedText(): String {
+        val kmh = (currentSpeedMetersPerSecond * KMH_PER_MPS).coerceAtLeast(0f)
+        if (kmh < 0.05f) {
+            return "0 km/h"
+        }
+
+        val roundedTenth = (kmh * 10f).roundToInt() / 10f
+        val whole = roundedTenth.roundToInt()
+        return if (kotlin.math.abs(roundedTenth - whole) < 0.05f) {
+            "$whole km/h"
+        } else {
+            String.format(Locale.US, "%.1f km/h", roundedTenth)
         }
     }
 
