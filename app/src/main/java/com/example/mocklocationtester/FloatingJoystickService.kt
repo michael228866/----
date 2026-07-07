@@ -24,11 +24,8 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.FrameLayout
-import android.widget.TextView
 import androidx.core.content.ContextCompat
-import java.util.Locale
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.min
@@ -41,7 +38,6 @@ private const val DEFAULT_MAX_SPEED_KMH = 5f
 class FloatingJoystickService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var overlayParams: WindowManager.LayoutParams
-    private lateinit var statusTextView: TextView
 
     private val handler = Handler(Looper.getMainLooper())
     private var overlayView: View? = null
@@ -52,7 +48,6 @@ class FloatingJoystickService : Service() {
     private var currentSpeedMetersPerSecond = 0f
     private var currentBearingDegrees = 0f
     private var lastLocationUpdateElapsedMillis = 0L
-    private var lastError: String? = null
     private var startHoldOnDestroy = true
     private var hasStartedMockMode = false
 
@@ -107,15 +102,17 @@ class FloatingJoystickService : Service() {
             longitude = currentLongitude,
             accuracyMeters = currentAccuracyMeters
         )
-        lastError = beginResult.message
-        hasStartedMockMode = beginResult.success
+        if (!beginResult.success) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        hasStartedMockMode = true
 
         if (overlayView == null) {
             addOverlayView()
         }
 
         lastLocationUpdateElapsedMillis = SystemClock.elapsedRealtime()
-        updateOverlayText()
         handler.removeCallbacks(locationTick)
         handler.post(locationTick)
         return START_STICKY
@@ -127,14 +124,14 @@ class FloatingJoystickService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacks(locationTick)
-        if (hasStartedMockMode) {
+        if (startHoldOnDestroy && hasStartedMockMode) {
             advanceLocationByElapsedTime()
             currentSpeedMetersPerSecond = 0f
             pushCurrentMockLocation()
         }
         removeOverlayView()
-        MockLocationController.endMode(this, MockMode.FLOATING_JOYSTICK)
         if (startHoldOnDestroy && hasStartedMockMode) {
+            MockLocationController.endMode(this, MockMode.FLOATING_JOYSTICK)
             ContextCompat.startForegroundService(
                 this,
                 Intent(this, HoldPositionService::class.java).apply {
@@ -155,42 +152,10 @@ class FloatingJoystickService : Service() {
 
     private fun addOverlayView() {
         val root = FrameLayout(this).apply {
-            setBackgroundColor(Color.argb(170, 18, 20, 24))
+            setBackgroundColor(Color.argb(36, 18, 20, 24))
             elevation = 12f
-            setPadding(10.dp(), 10.dp(), 10.dp(), 10.dp())
+            setPadding(8.dp(), 8.dp(), 8.dp(), 8.dp())
         }
-
-        statusTextView = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            includeFontPadding = false
-        }
-        root.addView(
-            statusTextView,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP or Gravity.START
-            ).apply {
-                leftMargin = 4.dp()
-                topMargin = 4.dp()
-            }
-        )
-
-        val closeButton = Button(this).apply {
-            text = "關閉"
-            textSize = 12f
-            minWidth = 0
-            minHeight = 0
-            setPadding(0, 0, 0, 0)
-            setOnClickListener {
-                stopSelf()
-            }
-        }
-        root.addView(
-            closeButton,
-            FrameLayout.LayoutParams(58.dp(), 34.dp(), Gravity.TOP or Gravity.END)
-        )
 
         val joystickView = FloatingJoystickView(this).apply {
             setJoystickListener { ratio, bearing, released ->
@@ -202,20 +167,16 @@ class FloatingJoystickService : Service() {
                 if (released) {
                     pushCurrentMockLocation()
                 }
-                updateOverlayText()
             }
         }
         root.addView(
             joystickView,
-            FrameLayout.LayoutParams(176.dp(), 176.dp(), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
-                .apply {
-                    bottomMargin = 10.dp()
-                }
+            FrameLayout.LayoutParams(176.dp(), 176.dp(), Gravity.CENTER)
         )
 
         overlayParams = WindowManager.LayoutParams(
-            252.dp(),
-            300.dp(),
+            200.dp(),
+            200.dp(),
             overlayWindowType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -252,7 +213,6 @@ class FloatingJoystickService : Service() {
     private fun tickMockLocation() {
         advanceLocationByElapsedTime()
         pushCurrentMockLocation()
-        updateOverlayText()
     }
 
     private fun advanceLocationByElapsedTime() {
@@ -292,7 +252,6 @@ class FloatingJoystickService : Service() {
             bearingDegrees = currentBearingDegrees,
             mode = MockMode.FLOATING_JOYSTICK
         )
-        lastError = result.message
         if (result.success) {
             hasStartedMockMode = true
             currentLatitude = MockLocationController.currentLat
@@ -300,23 +259,6 @@ class FloatingJoystickService : Service() {
             currentSpeedMetersPerSecond = MockLocationController.currentSpeed
             currentBearingDegrees = MockLocationController.currentBearing
         }
-    }
-
-    private fun updateOverlayText() {
-        if (!::statusTextView.isInitialized) {
-            return
-        }
-
-        val baseText = String.format(
-            Locale.US,
-            "模式 虛擬搖桿\n緯度 %.6f\n經度 %.6f\n目前速度：%.1f km/h\n方向 %.1f 度\n最大速度：%.1f km/h",
-            currentLatitude,
-            currentLongitude,
-            currentSpeedMetersPerSecond * KMH_PER_MPS,
-            currentBearingDegrees,
-            maxSpeedKmh
-        )
-        statusTextView.text = lastError?.let { "$baseText\n$it" } ?: baseText
     }
 
     private fun startForegroundNotification(): Boolean {

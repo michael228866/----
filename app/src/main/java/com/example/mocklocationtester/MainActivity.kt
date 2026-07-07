@@ -22,7 +22,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Looper
 import android.os.Process
-import android.os.SystemClock
 import android.provider.Settings
 import android.view.MotionEvent
 import androidx.activity.ComponentActivity
@@ -116,9 +115,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var fusedLocationClient: FusedLocationProviderClient
 
     private var selectedTab by mutableStateOf(MainTab.MANUAL)
-    private var latitudeInput by mutableStateOf("25.033964")
-    private var longitudeInput by mutableStateOf("121.564468")
-    private var accuracyInput by mutableStateOf("5")
     private var maxSpeedKmh by mutableStateOf(5f)
     private var routeSpeedKmh by mutableStateOf(5f)
     private var areaSpeedKmh by mutableStateOf(5f)
@@ -135,7 +131,6 @@ class MainActivity : ComponentActivity() {
     private var currentSpeedMetersPerSecond by mutableStateOf(0f)
     private var currentBearingDegrees by mutableStateOf(0f)
     private var activeMode by mutableStateOf(MockMode.IDLE)
-    private var joystickRatio by mutableStateOf(0f)
 
     private var hasFineLocationPermission by mutableStateOf(false)
     private var hasCoarseLocationPermission by mutableStateOf(false)
@@ -145,7 +140,6 @@ class MainActivity : ComponentActivity() {
     private var overlayStatusText by mutableStateOf("懸浮搖桿尚未啟動")
     private var mockSelectionError by mutableStateOf<String?>(null)
     private var operationError by mutableStateOf<String?>(null)
-    private var isWalking by mutableStateOf(false)
     private var isRouteCruising by mutableStateOf(false)
     private var isAreaCruising by mutableStateOf(false)
     private var isDestinationWalking by mutableStateOf(false)
@@ -164,13 +158,11 @@ class MainActivity : ComponentActivity() {
     private var networkConsumerLocation by mutableStateOf<ConsumerLocationUi?>(null)
     private var consumerLocation by mutableStateOf<ConsumerLocationUi?>(null)
 
-    private var walkingJob: Job? = null
     private var cruiseJob: Job? = null
     private var destinationWalkJob: Job? = null
     private var consumerCallback: LocationCallback? = null
     private var gpsConsumerListener: LocationListener? = null
     private var networkConsumerListener: LocationListener? = null
-    private var lastWalkingUpdateElapsedMillis = 0L
     private var mockUpdateReceiverRegistered = false
 
     private val mockLocationUpdateReceiver = object : BroadcastReceiver() {
@@ -214,9 +206,6 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 MockLocationTesterScreen(
                     selectedTab = selectedTab,
-                    latitudeInput = latitudeInput,
-                    longitudeInput = longitudeInput,
-                    accuracyInput = accuracyInput,
                     maxSpeedKmh = maxSpeedKmh,
                     routeSpeedKmh = routeSpeedKmh,
                     areaSpeedKmh = areaSpeedKmh,
@@ -237,7 +226,6 @@ class MainActivity : ComponentActivity() {
                     mockStatusText = mockStatusText,
                     overlayStatusText = overlayStatusText,
                     errorMessages = listOfNotNull(mockSelectionError, operationError).distinct(),
-                    isWalking = isWalking,
                     isRouteCruising = isRouteCruising,
                     isAreaCruising = isAreaCruising,
                     isDestinationWalking = isDestinationWalking,
@@ -256,9 +244,6 @@ class MainActivity : ComponentActivity() {
                     networkConsumerLocation = networkConsumerLocation,
                     consumerLocation = consumerLocation,
                     onTabChange = { selectedTab = it },
-                    onLatitudeInputChange = { latitudeInput = it },
-                    onLongitudeInputChange = { longitudeInput = it },
-                    onAccuracyInputChange = { accuracyInput = it },
                     onMaxSpeedChange = ::updateMaxSpeed,
                     onRouteSpeedChange = { routeSpeedKmh = it.coerceIn(1f, 100f) },
                     onAreaSpeedChange = { areaSpeedKmh = it.coerceIn(1f, 100f) },
@@ -267,21 +252,15 @@ class MainActivity : ComponentActivity() {
                     onRouteStartModeChange = { routeStartMode = it },
                     onMapEditModeChange = { mapEditMode = it },
                     onAreaRouteModeChange = { areaRouteMode = it },
-                    onApplyStartLocation = ::applyStartLocationFromInputs,
                     onUseLastMockLocationAsStart = ::useLastMockLocationAsStart,
                     onUseCurrentPhoneLocationAsStart = ::useCurrentPhoneLocationAsStart,
                     onClearLastMockLocation = ::clearLastMockLocation,
                     onHoldPosition = ::startHoldPosition,
                     onStopMockLocation = ::stopMockLocation,
-                    onPushCurrentLocation = ::pushCurrentLocation,
-                    onStartWalking = ::startWalkingSimulation,
-                    onStopWalking = ::stopWalkingSimulation,
                     onRequestPermissions = ::requestLocationPermissions,
                     onOpenOverlayPermissionSettings = ::openOverlayPermissionSettings,
                     onStartFloatingJoystick = ::startFloatingJoystickService,
                     onStopFloatingJoystick = { stopFloatingJoystickService() },
-                    onJoystickChange = ::updateJoystick,
-                    onJoystickRelease = ::releaseJoystick,
                     onMapClick = ::addMapPoint,
                     onDeleteRouteWaypoint = ::deleteRouteWaypoint,
                     onDeleteAreaPolygonPoint = ::deleteAreaPolygonPoint,
@@ -320,7 +299,6 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        stopWalkingSimulation()
         stopCruise()
         stopDestinationWalk(holdLastPosition = false)
         stopConsumer()
@@ -387,7 +365,7 @@ class MainActivity : ComponentActivity() {
         }.getOrDefault(MockMode.IDLE)
         refreshLastMockLocationState()
         mockStatusText = when (activeMode) {
-            MockMode.HOLD_POSITION -> "已停留在最後位置"
+            MockMode.HOLD_POSITION -> "停留在最後位置"
             MockMode.DESTINATION_WALK -> "慢走到目的地執行中"
             else -> "已同步模擬定位"
         }
@@ -400,9 +378,6 @@ class MainActivity : ComponentActivity() {
         currentSpeedMetersPerSecond = state.speedMetersPerSecond
         currentBearingDegrees = state.bearingDegrees
         activeMode = state.mode
-        if (syncInputs) {
-            syncInputsFromCurrentLocation()
-        }
     }
 
     private fun applyLatestControllerState(syncInputs: Boolean, allowDefaultFallback: Boolean) {
@@ -411,12 +386,6 @@ class MainActivity : ComponentActivity() {
         if (hasLastLocation || state.mode != MockMode.IDLE || allowDefaultFallback) {
             applyControllerState(state, syncInputs = syncInputs)
         }
-    }
-
-    private fun syncInputsFromCurrentLocation() {
-        latitudeInput = formatNumber(currentLatitude, 7)
-        longitudeInput = formatNumber(currentLongitude, 7)
-        accuracyInput = formatNumber(currentAccuracyMeters.toDouble(), 1)
     }
 
     private fun refreshLastMockLocationState() {
@@ -474,17 +443,6 @@ class MainActivity : ComponentActivity() {
         startActivity(intent)
     }
 
-    private fun applyStartLocationFromInputs() {
-        val parsed = parseLocationInputs() ?: return
-        currentLatitude = parsed.latitude
-        currentLongitude = parsed.longitude
-        currentAccuracyMeters = parsed.accuracyMeters
-        currentSpeedMetersPerSecond = 0f
-        joystickRatio = 0f
-        operationError = null
-        mockStatusText = "已套用起始座標"
-    }
-
     private fun useLastMockLocationAsStart() {
         val lastLocation = MockLocationController.lastMockLocation(this)
         if (lastLocation == null) {
@@ -497,8 +455,6 @@ class MainActivity : ComponentActivity() {
         currentLongitude = lastLocation.longitude
         currentSpeedMetersPerSecond = 0f
         currentBearingDegrees = lastLocation.bearingDegrees
-        joystickRatio = 0f
-        syncInputsFromCurrentLocation()
         mapRecenterRequest += 1
         operationError = null
         mockStatusText = "已使用最後位置作為起點"
@@ -531,7 +487,6 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        stopWalkingSimulation()
         stopCruise()
         stopDestinationWalk(holdLastPosition = false)
         stopFloatingJoystickService(holdLastPosition = false)
@@ -577,12 +532,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopMockLocation() {
-        stopWalkingSimulation()
         stopCruise()
         stopDestinationWalk(holdLastPosition = false)
         stopFloatingJoystickService(holdLastPosition = false)
         stopHoldPositionService()
-        MockLocationController.clearMockLocation(this)
+        MockLocationController.clearTestProvider(this)
+        MockLocationController.forceIdle(this)
         applyControllerState(MockLocationController.latestState(this), syncInputs = false)
         currentSpeedMetersPerSecond = 0f
         operationError = null
@@ -640,9 +595,8 @@ class MainActivity : ComponentActivity() {
     private fun applyPhoneLocationAsStart(location: Location) {
         currentLatitude = location.latitude
         currentLongitude = normalizeLongitude(location.longitude)
+        currentAccuracyMeters = location.accuracy.coerceIn(1f, 10000f)
         currentSpeedMetersPerSecond = 0f
-        joystickRatio = 0f
-        syncInputsFromCurrentLocation()
         mapRecenterRequest += 1
         operationError = null
         mockStatusText = "已使用目前手機位置作為起點"
@@ -654,121 +608,10 @@ class MainActivity : ComponentActivity() {
 
     private fun updateMaxSpeed(value: Float) {
         maxSpeedKmh = value.coerceIn(1f, 100f)
-        currentSpeedMetersPerSecond = (maxSpeedKmh / KMH_PER_MPS) * joystickRatio
-    }
-
-    private fun updateJoystick(ratio: Float, bearingDegrees: Float) {
-        if (isWalking) {
-            advanceWalkingLocationByElapsedTime()
-        }
-        joystickRatio = ratio.coerceIn(0f, 1f)
-        currentSpeedMetersPerSecond = (maxSpeedKmh / KMH_PER_MPS) * joystickRatio
-        if (joystickRatio > 0.01f) {
-            currentBearingDegrees = normalizeBearing(bearingDegrees.toDouble()).toFloat()
-        }
-    }
-
-    private fun releaseJoystick() {
-        if (isWalking) {
-            advanceWalkingLocationByElapsedTime()
-        }
-        joystickRatio = 0f
-        currentSpeedMetersPerSecond = 0f
-        if (isWalking) {
-            sendCurrentMockLocation(MockMode.MANUAL_JOYSTICK)
-        }
-    }
-
-    private fun pushCurrentLocation() {
-        if (!applyAccuracyInput()) {
-            return
-        }
-        stopCruise()
-        stopDestinationWalk(holdLastPosition = false)
-        stopFloatingJoystickService(holdLastPosition = false)
-        if (!prepareMockProvider(MockMode.MANUAL_JOYSTICK)) {
-            return
-        }
-        sendCurrentMockLocation(MockMode.MANUAL_JOYSTICK)
-    }
-
-    private fun startWalkingSimulation() {
-        if (!applyAccuracyInput()) {
-            return
-        }
-        stopCruise()
-        stopDestinationWalk(holdLastPosition = false)
-        stopFloatingJoystickService(holdLastPosition = false)
-
-        if (!prepareMockProvider(MockMode.MANUAL_JOYSTICK)) {
-            return
-        }
-
-        walkingJob?.cancel()
-        isWalking = true
-        lastWalkingUpdateElapsedMillis = SystemClock.elapsedRealtime()
-        operationError = null
-        mockStatusText = "走路模擬中"
-        sendCurrentMockLocation(MockMode.MANUAL_JOYSTICK)
-
-        walkingJob = lifecycleScope.launch {
-            while (isActive) {
-                delay(1000L)
-                advanceWalkingLocationByElapsedTime()
-                val result = sendCurrentMockLocation(MockMode.MANUAL_JOYSTICK)
-                if (!result) {
-                    stopWalkingSimulation()
-                    break
-                }
-            }
-        }
-    }
-
-    private fun stopWalkingSimulation() {
-        walkingJob?.cancel()
-        walkingJob = null
-        if (isWalking) {
-            releaseJoystick()
-            MockLocationController.endMode(this, MockMode.MANUAL_JOYSTICK)
-        }
-        isWalking = false
-        lastWalkingUpdateElapsedMillis = 0L
-        if (activeMode == MockMode.MANUAL_JOYSTICK || activeMode == MockMode.IDLE) {
-            mockStatusText = "已停止走路模擬"
-        }
-    }
-
-    private fun advanceWalkingLocationByElapsedTime() {
-        val now = SystemClock.elapsedRealtime()
-        val last = lastWalkingUpdateElapsedMillis
-        if (last <= 0L) {
-            lastWalkingUpdateElapsedMillis = now
-            return
-        }
-
-        val elapsedSeconds = (now - last) / 1000.0
-        if (elapsedSeconds <= 0.0) {
-            return
-        }
-
-        val distanceMeters = currentSpeedMetersPerSecond.toDouble() * elapsedSeconds
-        if (distanceMeters > 0.0) {
-            val moved = moveLatLng(
-                latDeg = currentLatitude,
-                lonDeg = currentLongitude,
-                distanceMeters = distanceMeters,
-                bearingDeg = currentBearingDegrees.toDouble()
-            )
-            currentLatitude = moved.first
-            currentLongitude = moved.second
-        }
-        lastWalkingUpdateElapsedMillis = now
     }
 
     private fun startFloatingJoystickService() {
-        if (!applyAccuracyInput()) {
-            return
-        }
+        currentAccuracyMeters = currentAccuracyMeters.coerceIn(1f, 10000f)
         refreshPermissionState()
         refreshMockAppState()
         refreshOverlayPermissionState()
@@ -788,7 +631,6 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        stopWalkingSimulation()
         stopCruise()
         stopDestinationWalk(holdLastPosition = false)
         requestNotificationPermissionIfNeeded()
@@ -814,7 +656,7 @@ class MainActivity : ComponentActivity() {
         overlayStatusText = if (holdLastPosition) {
             "已關閉懸浮搖桿，位置停留在最後座標"
         } else {
-            "已停止懸浮搖桿"
+            "懸浮搖桿已關閉"
         }
     }
 
@@ -993,7 +835,6 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        stopWalkingSimulation()
         stopFloatingJoystickService(holdLastPosition = false)
         stopCruise()
         stopDestinationWalk(holdLastPosition = false)
@@ -1157,7 +998,6 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        stopWalkingSimulation()
         stopFloatingJoystickService(holdLastPosition = false)
         stopCruise()
         stopDestinationWalk(holdLastPosition = false)
@@ -1258,85 +1098,6 @@ class MainActivity : ComponentActivity() {
         }
         startCruise(routeWaypoints.toList(), MockMode.ROUTE_CRUISE)
         mockStatusText = "路徑已更新，巡航已從最近點續行"
-    }
-
-    private fun parseLocationInputs(): ParsedLocationInput? {
-        val latitude = latitudeInput.trim().toDoubleOrNull()
-        val longitude = longitudeInput.trim().toDoubleOrNull()
-        val accuracy = accuracyInput.trim().toFloatOrNull()
-
-        if (latitude == null || !latitude.isFinite() || latitude !in -90.0..90.0) {
-            operationError = "緯度必須是 -90 到 90 之間的有效數字。"
-            return null
-        }
-        if (longitude == null || !longitude.isFinite() || longitude !in -180.0..180.0) {
-            operationError = "經度必須是 -180 到 180 之間的有效數字。"
-            return null
-        }
-        if (accuracy == null || !accuracy.isFinite() || accuracy <= 0f || accuracy > 10000f) {
-            operationError = "精度必須是 0 到 10000 公尺之間的有效數字。"
-            return null
-        }
-
-        return ParsedLocationInput(
-            latitude = latitude,
-            longitude = normalizeLongitude(longitude),
-            accuracyMeters = accuracy
-        )
-    }
-
-    private fun applyAccuracyInput(): Boolean {
-        val accuracy = accuracyInput.trim().toFloatOrNull()
-        if (accuracy == null || !accuracy.isFinite() || accuracy <= 0f || accuracy > 10000f) {
-            operationError = "精度必須是 0 到 10000 公尺之間的有效數字。"
-            return false
-        }
-        currentAccuracyMeters = accuracy
-        return true
-    }
-
-    private fun prepareMockProvider(mode: MockMode): Boolean {
-        refreshPermissionState()
-        refreshMockAppState()
-        if (!hasFineLocationPermission) {
-            operationError = "需要授予精確位置權限，系統詢問時請選擇「精確」。"
-            requestLocationPermissions()
-            return false
-        }
-        if (!isMockLocationAppSelected) {
-            operationError = "無法推送模擬定位：$MOCK_APP_NOT_SELECTED_MESSAGE"
-            return false
-        }
-
-        if (mode != MockMode.HOLD_POSITION) {
-            stopHoldPositionService()
-        }
-        val result = MockLocationController.beginMode(
-            context = this,
-            mode = mode,
-            latitude = currentLatitude,
-            longitude = currentLongitude,
-            accuracyMeters = currentAccuracyMeters
-        )
-        operationError = result.message
-        return result.success
-    }
-
-    private fun sendCurrentMockLocation(mode: MockMode): Boolean {
-        val result = MockLocationController.pushLocation(
-            context = this,
-            latitude = currentLatitude,
-            longitude = currentLongitude,
-            accuracyMeters = currentAccuracyMeters,
-            speedMetersPerSecond = currentSpeedMetersPerSecond,
-            bearingDegrees = currentBearingDegrees,
-            mode = mode
-        )
-        operationError = result.message
-        if (result.success) {
-            mockStatusText = "已推送模擬定位"
-        }
-        return result.success
     }
 
     @SuppressLint("MissingPermission")
@@ -1467,9 +1228,6 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun MockLocationTesterScreen(
     selectedTab: MainTab,
-    latitudeInput: String,
-    longitudeInput: String,
-    accuracyInput: String,
     maxSpeedKmh: Float,
     routeSpeedKmh: Float,
     areaSpeedKmh: Float,
@@ -1490,7 +1248,6 @@ private fun MockLocationTesterScreen(
     mockStatusText: String,
     overlayStatusText: String,
     errorMessages: List<String>,
-    isWalking: Boolean,
     isRouteCruising: Boolean,
     isAreaCruising: Boolean,
     isDestinationWalking: Boolean,
@@ -1509,9 +1266,6 @@ private fun MockLocationTesterScreen(
     networkConsumerLocation: ConsumerLocationUi?,
     consumerLocation: ConsumerLocationUi?,
     onTabChange: (MainTab) -> Unit,
-    onLatitudeInputChange: (String) -> Unit,
-    onLongitudeInputChange: (String) -> Unit,
-    onAccuracyInputChange: (String) -> Unit,
     onMaxSpeedChange: (Float) -> Unit,
     onRouteSpeedChange: (Float) -> Unit,
     onAreaSpeedChange: (Float) -> Unit,
@@ -1520,21 +1274,15 @@ private fun MockLocationTesterScreen(
     onRouteStartModeChange: (RouteStartMode) -> Unit,
     onMapEditModeChange: (MapEditMode) -> Unit,
     onAreaRouteModeChange: (AreaRouteMode) -> Unit,
-    onApplyStartLocation: () -> Unit,
     onUseLastMockLocationAsStart: () -> Unit,
     onUseCurrentPhoneLocationAsStart: () -> Unit,
     onClearLastMockLocation: () -> Unit,
     onHoldPosition: () -> Unit,
     onStopMockLocation: () -> Unit,
-    onPushCurrentLocation: () -> Unit,
-    onStartWalking: () -> Unit,
-    onStopWalking: () -> Unit,
     onRequestPermissions: () -> Unit,
     onOpenOverlayPermissionSettings: () -> Unit,
     onStartFloatingJoystick: () -> Unit,
     onStopFloatingJoystick: () -> Unit,
-    onJoystickChange: (Float, Float) -> Unit,
-    onJoystickRelease: () -> Unit,
     onMapClick: (LatLng) -> Unit,
     onDeleteRouteWaypoint: (Int) -> Unit,
     onDeleteAreaPolygonPoint: (Int) -> Unit,
@@ -1594,40 +1342,26 @@ private fun MockLocationTesterScreen(
                             onOpenOverlayPermissionSettings = onOpenOverlayPermissionSettings
                         )
                         ManualControlTab(
-                        latitudeInput = latitudeInput,
-                        longitudeInput = longitudeInput,
-                        accuracyInput = accuracyInput,
-                        maxSpeedKmh = maxSpeedKmh,
-                        currentLatitude = currentLatitude,
-                        currentLongitude = currentLongitude,
-                        currentAccuracyMeters = currentAccuracyMeters,
-                        currentSpeedMetersPerSecond = currentSpeedMetersPerSecond,
-                        currentBearingDegrees = currentBearingDegrees,
-                        isWalking = isWalking,
-                        hasLastMockLocation = hasLastMockLocation,
-                        isConsumerRunning = isConsumerRunning,
-                        gpsConsumerLocation = gpsConsumerLocation,
-                        networkConsumerLocation = networkConsumerLocation,
-                        consumerLocation = consumerLocation,
-                        onLatitudeInputChange = onLatitudeInputChange,
-                        onLongitudeInputChange = onLongitudeInputChange,
-                        onAccuracyInputChange = onAccuracyInputChange,
-                        onMaxSpeedChange = onMaxSpeedChange,
-                        onApplyStartLocation = onApplyStartLocation,
-                        onUseLastMockLocationAsStart = onUseLastMockLocationAsStart,
-                        onUseCurrentPhoneLocationAsStart = onUseCurrentPhoneLocationAsStart,
-                        onClearLastMockLocation = onClearLastMockLocation,
-                        onHoldPosition = onHoldPosition,
-                        onStopMockLocation = onStopMockLocation,
-                        onPushCurrentLocation = onPushCurrentLocation,
-                        onStartWalking = onStartWalking,
-                        onStopWalking = onStopWalking,
-                        onStartFloatingJoystick = onStartFloatingJoystick,
-                        onStopFloatingJoystick = onStopFloatingJoystick,
-                        onJoystickChange = onJoystickChange,
-                        onJoystickRelease = onJoystickRelease,
-                        onStartConsumer = onStartConsumer,
-                        onStopConsumer = onStopConsumer
+                            maxSpeedKmh = maxSpeedKmh,
+                            currentLatitude = currentLatitude,
+                            currentLongitude = currentLongitude,
+                            currentAccuracyMeters = currentAccuracyMeters,
+                            currentSpeedMetersPerSecond = currentSpeedMetersPerSecond,
+                            currentBearingDegrees = currentBearingDegrees,
+                            hasLastMockLocation = hasLastMockLocation,
+                            isConsumerRunning = isConsumerRunning,
+                            gpsConsumerLocation = gpsConsumerLocation,
+                            networkConsumerLocation = networkConsumerLocation,
+                            consumerLocation = consumerLocation,
+                            onMaxSpeedChange = onMaxSpeedChange,
+                            onUseLastMockLocationAsStart = onUseLastMockLocationAsStart,
+                            onUseCurrentPhoneLocationAsStart = onUseCurrentPhoneLocationAsStart,
+                            onClearLastMockLocation = onClearLastMockLocation,
+                            onStopMockLocation = onStopMockLocation,
+                            onStartFloatingJoystick = onStartFloatingJoystick,
+                            onStopFloatingJoystick = onStopFloatingJoystick,
+                            onStartConsumer = onStartConsumer,
+                            onStopConsumer = onStopConsumer
                         )
                     }
                 }
@@ -1703,12 +1437,6 @@ private fun MockLocationTesterScreen(
     }
 }
 
-private data class ParsedLocationInput(
-    val latitude: Double,
-    val longitude: Double,
-    val accuracyMeters: Float
-)
-
 data class ConsumerLocationUi(
     val latitude: Double,
     val longitude: Double,
@@ -1747,7 +1475,6 @@ private fun Location.isFromMockProviderCompat(): Boolean {
 private fun activeModeText(mode: MockMode): String {
     return when (mode) {
         MockMode.IDLE -> "閒置"
-        MockMode.MANUAL_JOYSTICK -> "手動搖桿"
         MockMode.FLOATING_JOYSTICK -> "懸浮搖桿"
         MockMode.ROUTE_CRUISE -> "路徑巡航"
         MockMode.AREA_CRUISE -> "區域巡航"
@@ -1761,7 +1488,7 @@ fun formatNumber(value: Double, decimals: Int): String {
 }
 
 private enum class MainTab(val title: String) {
-    MANUAL("手動控制"),
+    MANUAL("定位狀態"),
     MAP("地圖繞行模式")
 }
 

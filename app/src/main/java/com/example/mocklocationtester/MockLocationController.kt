@@ -9,7 +9,6 @@ import android.os.SystemClock
 
 enum class MockMode {
     IDLE,
-    MANUAL_JOYSTICK,
     FLOATING_JOYSTICK,
     ROUTE_CRUISE,
     AREA_CRUISE,
