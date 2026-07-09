@@ -86,6 +86,7 @@ class FloatingJoystickService : Service() {
         currentLongitude = intent?.getDoubleExtra(EXTRA_LONGITUDE, currentLongitude) ?: currentLongitude
         currentAccuracyMeters = intent?.getFloatExtra(EXTRA_ACCURACY, currentAccuracyMeters)
             ?: currentAccuracyMeters
+        currentSpeedMetersPerSecond = 0f
         maxSpeedKmh = intent?.getFloatExtra(EXTRA_MAX_SPEED_KMH, maxSpeedKmh) ?: maxSpeedKmh
         if (!isValidLatLng(currentLatitude, currentLongitude)) {
             stopSelf()

@@ -138,6 +138,44 @@ object MockLocationController {
     }
 
     @Synchronized
+    fun saveLastLocation(
+        context: Context,
+        latitude: Double,
+        longitude: Double,
+        accuracyMeters: Float,
+        speedMetersPerSecond: Float = 0f,
+        bearingDegrees: Float = currentBearing,
+        mode: MockMode = activeMode
+    ): MockPushResult {
+        if (!isValidLatLng(latitude, longitude)) {
+            return MockPushResult(
+                success = false,
+                message = "座標無效，緯度需介於 -90 到 90，經度需介於 -180 到 180。"
+            )
+        }
+
+        currentLat = latitude
+        currentLng = longitude
+        currentAccuracy = sanitizeAccuracyMeters(accuracyMeters)
+        currentSpeed = speedMetersPerSecond.coerceAtLeast(0f)
+        currentBearing = if (bearingDegrees.isFinite()) {
+            normalizeBearing(bearingDegrees)
+        } else {
+            0f
+        }
+        activeMode = mode
+        LastMockLocationState.save(
+            context = context,
+            latitude = currentLat,
+            longitude = currentLng,
+            speedMetersPerSecond = currentSpeed,
+            bearingDegrees = currentBearing
+        )
+        persistState(context)
+        return MockPushResult(success = true)
+    }
+
+    @Synchronized
     fun pushLocation(
         context: Context,
         latitude: Double,
@@ -456,6 +494,11 @@ object MockLocationController {
     }
 
     private fun persistAndBroadcast(context: Context) {
+        persistState(context)
+        broadcastState(context)
+    }
+
+    private fun persistState(context: Context) {
         context.getSharedPreferences(SHARED_PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putLong(PREF_LATITUDE, currentLat.toRawBits())
@@ -465,7 +508,9 @@ object MockLocationController {
             .putFloat(PREF_BEARING, currentBearing)
             .putString(PREF_MODE, activeMode.name)
             .apply()
+    }
 
+    private fun broadcastState(context: Context) {
         val intent = Intent(ACTION_LOCATION_UPDATE).apply {
             setPackage(context.packageName)
             putExtra(EXTRA_LATITUDE, currentLat)

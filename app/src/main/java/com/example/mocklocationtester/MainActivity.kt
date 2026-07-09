@@ -458,13 +458,133 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        applySpecifiedCoordinateAndMaybePush(
+            latitude = latitude,
+            longitude = longitude,
+            accuracyMeters = accuracyMeters
+        )
+    }
+
+    private fun applySpecifiedCoordinateAndMaybePush(
+        latitude: Double,
+        longitude: Double,
+        accuracyMeters: Float
+    ) {
+        val modeBeforeApply = currentPushableMockMode()
+        val normalizedLongitude = normalizeLongitude(longitude)
+        val safeAccuracyMeters = sanitizeAccuracyMeters(accuracyMeters)
+        val safeBearingDegrees = if (currentBearingDegrees.isFinite()) {
+            normalizeBearing(currentBearingDegrees)
+        } else {
+            0f
+        }
+
+        stopHoldPositionService()
+
         currentLatitude = latitude
-        currentLongitude = longitude
-        currentAccuracyMeters = sanitizeAccuracyMeters(accuracyMeters)
+        currentLongitude = normalizedLongitude
+        currentAccuracyMeters = safeAccuracyMeters
         currentSpeedMetersPerSecond = 0f
+        currentBearingDegrees = safeBearingDegrees
         mapRecenterRequest += 1
-        operationError = null
-        mockStatusText = "已套用指定座標"
+
+        val saveResult = MockLocationController.saveLastLocation(
+            context = this,
+            latitude = currentLatitude,
+            longitude = currentLongitude,
+            accuracyMeters = currentAccuracyMeters,
+            speedMetersPerSecond = 0f,
+            bearingDegrees = currentBearingDegrees,
+            mode = modeBeforeApply
+        )
+        operationError = saveResult.message
+        refreshLastMockLocationState()
+        if (!saveResult.success) {
+            mockStatusText = "指定座標已更新，但保存最後位置失敗"
+            return
+        }
+
+        if (modeBeforeApply == MockMode.IDLE) {
+            activeMode = MockMode.IDLE
+            mockStatusText = "已套用指定座標"
+            return
+        }
+
+        val beginResult = MockLocationController.beginMode(
+            context = this,
+            mode = modeBeforeApply,
+            latitude = currentLatitude,
+            longitude = currentLongitude,
+            accuracyMeters = currentAccuracyMeters
+        )
+        if (!beginResult.success) {
+            operationError = beginResult.message
+            mockStatusText = "已套用指定座標，但推送模擬定位失敗"
+            return
+        }
+
+        val pushResult = MockLocationController.pushLocation(
+            context = this,
+            latitude = currentLatitude,
+            longitude = currentLongitude,
+            accuracyMeters = currentAccuracyMeters,
+            speedMetersPerSecond = 0f,
+            bearingDegrees = currentBearingDegrees,
+            mode = modeBeforeApply
+        )
+        operationError = pushResult.message
+        if (!pushResult.success) {
+            mockStatusText = "已套用指定座標，但推送模擬定位失敗"
+            return
+        }
+
+        activeMode = modeBeforeApply
+        refreshLastMockLocationState()
+        if (modeBeforeApply == MockMode.HOLD_POSITION) {
+            requestNotificationPermissionIfNeeded()
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, HoldPositionService::class.java).apply {
+                    action = HoldPositionService.ACTION_START
+                }
+            )
+            mockStatusText = "已套用指定座標並停留"
+        } else {
+            if (modeBeforeApply == MockMode.FLOATING_JOYSTICK) {
+                syncFloatingJoystickServiceToSpecifiedCoordinate()
+            }
+            mockStatusText = "已套用指定座標並推送"
+        }
+    }
+
+    private fun currentPushableMockMode(): MockMode {
+        return when {
+            activeMode in setOf(
+                MockMode.HOLD_POSITION,
+                MockMode.FLOATING_JOYSTICK,
+                MockMode.ROUTE_CRUISE,
+                MockMode.AREA_CRUISE,
+                MockMode.DESTINATION_WALK
+            ) -> activeMode
+            isDestinationWalking -> MockMode.DESTINATION_WALK
+            isRouteCruising -> MockMode.ROUTE_CRUISE
+            isAreaCruising -> MockMode.AREA_CRUISE
+            else -> MockMode.IDLE
+        }
+    }
+
+    private fun syncFloatingJoystickServiceToSpecifiedCoordinate() {
+        requestNotificationPermissionIfNeeded()
+        ContextCompat.startForegroundService(
+            this,
+            Intent(this, FloatingJoystickService::class.java).apply {
+                action = FloatingJoystickService.ACTION_START
+                putExtra(FloatingJoystickService.EXTRA_LATITUDE, currentLatitude)
+                putExtra(FloatingJoystickService.EXTRA_LONGITUDE, currentLongitude)
+                putExtra(FloatingJoystickService.EXTRA_ACCURACY, currentAccuracyMeters)
+                putExtra(FloatingJoystickService.EXTRA_MAX_SPEED_KMH, maxSpeedKmh)
+            }
+        )
     }
 
     private fun resetToTaipei101() {
