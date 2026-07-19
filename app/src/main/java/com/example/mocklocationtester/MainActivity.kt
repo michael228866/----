@@ -22,6 +22,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Looper
 import android.os.Process
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.MotionEvent
 import androidx.activity.ComponentActivity
@@ -80,6 +81,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
@@ -92,13 +94,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import org.osmdroid.config.Configuration
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
-import org.osmdroid.util.GeoPoint
-import org.osmdroid.views.MapView
-import org.osmdroid.views.overlay.Marker
-import org.osmdroid.views.overlay.Overlay
-import org.osmdroid.views.overlay.Polyline
 import java.util.Locale
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -192,7 +187,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Configuration.getInstance().userAgentValue = packageName
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
         refreshPermissionState()
@@ -277,7 +271,7 @@ class MainActivity : ComponentActivity() {
                     onStartAreaCruise = ::startAreaCruise,
                     onStartDestinationWalk = ::startDestinationWalk,
                     onStopDestinationWalk = { stopDestinationWalk() },
-                    onStopCruise = ::stopCruise,
+                    onStopCruise = { stopCruise() },
                     onStartConsumer = ::startConsumer,
                     onStopConsumer = ::stopConsumer
                 )
@@ -295,6 +289,7 @@ class MainActivity : ComponentActivity() {
         registerMockLocationUpdateReceiver()
         applyLatestControllerState(syncInputs = false, allowDefaultFallback = false)
         refreshLastMockLocationState()
+        reconcileInterruptedLocationMode()
     }
 
     override fun onPause() {
@@ -303,8 +298,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        stopCruise()
-        stopDestinationWalk(holdLastPosition = false)
+        stopCruise(holdLastPosition = true)
+        stopDestinationWalk(holdLastPosition = true)
         stopConsumer()
         super.onDestroy()
     }
@@ -319,6 +314,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestNotificationPermissionIfNeeded() {
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             !hasPermission(Manifest.permission.POST_NOTIFICATIONS)
         ) {
@@ -370,8 +368,11 @@ class MainActivity : ComponentActivity() {
         refreshLastMockLocationState()
         mockStatusText = when (activeMode) {
             MockMode.HOLD_POSITION -> "停留在最後位置"
+            MockMode.FLOATING_JOYSTICK -> "懸浮搖桿執行中"
+            MockMode.ROUTE_CRUISE -> "路徑巡航中"
+            MockMode.AREA_CRUISE -> "區域巡航中"
             MockMode.DESTINATION_WALK -> "慢走到目的地執行中"
-            else -> "已同步模擬定位"
+            MockMode.IDLE -> "已停止模擬定位"
         }
     }
 
@@ -390,6 +391,25 @@ class MainActivity : ComponentActivity() {
         if (hasLastLocation || state.mode != MockMode.IDLE || allowDefaultFallback) {
             applyControllerState(state, syncInputs = syncInputs)
         }
+    }
+
+    private fun reconcileInterruptedLocationMode() {
+        val interruptedMode = when {
+            activeMode == MockMode.ROUTE_CRUISE && cruiseJob == null -> activeMode
+            activeMode == MockMode.AREA_CRUISE && cruiseJob == null -> activeMode
+            activeMode == MockMode.DESTINATION_WALK && destinationWalkJob == null -> activeMode
+            else -> null
+        } ?: return
+
+        isRouteCruising = false
+        isAreaCruising = false
+        isDestinationWalking = false
+        enterHoldPositionFromCurrent(
+            when (interruptedMode) {
+                MockMode.DESTINATION_WALK -> "慢走已中斷，停留在最後位置"
+                else -> "巡航已中斷，停留在最後位置"
+            }
+        )
     }
 
     private fun refreshLastMockLocationState() {
@@ -468,9 +488,17 @@ class MainActivity : ComponentActivity() {
     private fun applySpecifiedCoordinateAndMaybePush(
         latitude: Double,
         longitude: Double,
-        accuracyMeters: Float
+        accuracyMeters: Float,
+        baseStatusText: String = "已套用指定座標",
+        pushedStatusText: String = "已套用指定座標並推送",
+        holdStatusText: String = "已套用指定座標並停留"
     ) {
         val modeBeforeApply = currentPushableMockMode()
+        val targetMode = if (modeBeforeApply == MockMode.IDLE) {
+            MockMode.HOLD_POSITION
+        } else {
+            modeBeforeApply
+        }
         val normalizedLongitude = normalizeLongitude(longitude)
         val safeAccuracyMeters = sanitizeAccuracyMeters(accuracyMeters)
         val safeBearingDegrees = if (currentBearingDegrees.isFinite()) {
@@ -478,8 +506,6 @@ class MainActivity : ComponentActivity() {
         } else {
             0f
         }
-
-        stopHoldPositionService()
 
         currentLatitude = latitude
         currentLongitude = normalizedLongitude
@@ -495,31 +521,25 @@ class MainActivity : ComponentActivity() {
             accuracyMeters = currentAccuracyMeters,
             speedMetersPerSecond = 0f,
             bearingDegrees = currentBearingDegrees,
-            mode = modeBeforeApply
+            mode = targetMode
         )
         operationError = saveResult.message
         refreshLastMockLocationState()
         if (!saveResult.success) {
-            mockStatusText = "指定座標已更新，但保存最後位置失敗"
-            return
-        }
-
-        if (modeBeforeApply == MockMode.IDLE) {
-            activeMode = MockMode.IDLE
-            mockStatusText = "已套用指定座標"
+            mockStatusText = "$baseStatusText，但保存最後位置失敗"
             return
         }
 
         val beginResult = MockLocationController.beginMode(
             context = this,
-            mode = modeBeforeApply,
+            mode = targetMode,
             latitude = currentLatitude,
             longitude = currentLongitude,
             accuracyMeters = currentAccuracyMeters
         )
         if (!beginResult.success) {
             operationError = beginResult.message
-            mockStatusText = "已套用指定座標，但推送模擬定位失敗"
+            mockStatusText = "$baseStatusText，但推送模擬定位失敗"
             return
         }
 
@@ -530,30 +550,29 @@ class MainActivity : ComponentActivity() {
             accuracyMeters = currentAccuracyMeters,
             speedMetersPerSecond = 0f,
             bearingDegrees = currentBearingDegrees,
-            mode = modeBeforeApply
+            mode = targetMode
         )
         operationError = pushResult.message
         if (!pushResult.success) {
-            mockStatusText = "已套用指定座標，但推送模擬定位失敗"
+            mockStatusText = "$baseStatusText，但推送模擬定位失敗"
             return
         }
 
-        activeMode = modeBeforeApply
+        activeMode = targetMode
         refreshLastMockLocationState()
-        if (modeBeforeApply == MockMode.HOLD_POSITION) {
-            requestNotificationPermissionIfNeeded()
-            ContextCompat.startForegroundService(
-                this,
-                Intent(this, HoldPositionService::class.java).apply {
-                    action = HoldPositionService.ACTION_START
-                }
-            )
-            mockStatusText = "已套用指定座標並停留"
+        refreshConsumerLastKnownLocation()
+        if (targetMode == MockMode.HOLD_POSITION) {
+            mockStatusText = if (startHoldPositionService()) {
+                holdStatusText
+            } else {
+                "$baseStatusText，但持續停留服務啟動失敗"
+            }
         } else {
-            if (modeBeforeApply == MockMode.FLOATING_JOYSTICK) {
+            stopHoldPositionService()
+            if (targetMode == MockMode.FLOATING_JOYSTICK) {
                 syncFloatingJoystickServiceToSpecifiedCoordinate()
             }
-            mockStatusText = "已套用指定座標並推送"
+            mockStatusText = pushedStatusText
         }
     }
 
@@ -587,14 +606,41 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun refreshConsumerLastKnownLocation() {
+        if (!isConsumerRunning) {
+            return
+        }
+
+        val mockLocation = ConsumerLocationUi(
+            latitude = currentLatitude,
+            longitude = currentLongitude,
+            accuracyMeters = currentAccuracyMeters,
+            speedMetersPerSecond = 0f,
+            bearingDegrees = currentBearingDegrees,
+            timeMillis = System.currentTimeMillis(),
+            elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
+            isMock = true
+        )
+        if (gpsConsumerListener != null) {
+            gpsConsumerLocation = mockLocation
+        }
+        if (networkConsumerListener != null) {
+            networkConsumerLocation = mockLocation
+        }
+        if (consumerCallback != null) {
+            consumerLocation = mockLocation
+        }
+    }
+
     private fun resetToTaipei101() {
-        currentLatitude = TAIPEI_101_LATITUDE
-        currentLongitude = TAIPEI_101_LONGITUDE
-        currentAccuracyMeters = 5f
-        currentSpeedMetersPerSecond = 0f
-        mapRecenterRequest += 1
-        operationError = null
-        mockStatusText = "已重設為台北 101"
+        applySpecifiedCoordinateAndMaybePush(
+            latitude = TAIPEI_101_LATITUDE,
+            longitude = TAIPEI_101_LONGITUDE,
+            accuracyMeters = 5f,
+            baseStatusText = "已重設為台北 101",
+            pushedStatusText = "已重設為台北 101",
+            holdStatusText = "已重設為台北 101"
+        )
     }
 
     private fun openOverlayPermissionSettings() {
@@ -613,14 +659,15 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        currentLatitude = lastLocation.latitude
-        currentLongitude = lastLocation.longitude
-        currentSpeedMetersPerSecond = 0f
         currentBearingDegrees = lastLocation.bearingDegrees
-        mapRecenterRequest += 1
-        operationError = null
-        mockStatusText = "已使用最後位置作為起點"
-        refreshLastMockLocationState()
+        applySpecifiedCoordinateAndMaybePush(
+            latitude = lastLocation.latitude,
+            longitude = lastLocation.longitude,
+            accuracyMeters = currentAccuracyMeters,
+            baseStatusText = "已使用最後位置作為起點",
+            pushedStatusText = "已使用最後位置作為起點並推送",
+            holdStatusText = "已使用最後位置作為起點並停留"
+        )
     }
 
     private fun clearLastMockLocation() {
@@ -649,7 +696,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        stopCruise()
+        stopCruise(holdLastPosition = false)
         stopDestinationWalk(holdLastPosition = false)
         stopFloatingJoystickService(holdLastPosition = false)
         requestNotificationPermissionIfNeeded()
@@ -683,18 +730,18 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        ContextCompat.startForegroundService(
-            this,
-            Intent(this, HoldPositionService::class.java).apply {
-                action = HoldPositionService.ACTION_START
-            }
-        )
-        mockStatusText = "已停留在最後位置"
         activeMode = MockMode.HOLD_POSITION
+        mockStatusText = if (startHoldPositionService()) {
+            "已停留在最後位置"
+        } else {
+            "位置已推送，但持續停留服務啟動失敗"
+        }
+        refreshLastMockLocationState()
+        refreshConsumerLastKnownLocation()
     }
 
     private fun stopMockLocation() {
-        stopCruise()
+        stopCruise(holdLastPosition = false)
         stopDestinationWalk(holdLastPosition = false)
         stopFloatingJoystickService(holdLastPosition = false)
         stopHoldPositionService()
@@ -708,6 +755,25 @@ class MainActivity : ComponentActivity() {
 
     private fun stopHoldPositionService() {
         stopService(Intent(this, HoldPositionService::class.java))
+    }
+
+    private fun startHoldPositionService(): Boolean {
+        requestNotificationPermissionIfNeeded()
+        return try {
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, HoldPositionService::class.java).apply {
+                    action = HoldPositionService.ACTION_START
+                }
+            )
+            true
+        } catch (exception: SecurityException) {
+            operationError = "持續停留服務啟動失敗：定位或前景服務權限不足。"
+            false
+        } catch (exception: RuntimeException) {
+            operationError = "持續停留服務啟動失敗，請回到程式後再試。"
+            false
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -755,13 +821,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun applyPhoneLocationAsStart(location: Location) {
-        currentLatitude = location.latitude
-        currentLongitude = normalizeLongitude(location.longitude)
-        currentAccuracyMeters = location.accuracy.coerceIn(1f, 10000f)
-        currentSpeedMetersPerSecond = 0f
-        mapRecenterRequest += 1
-        operationError = null
-        mockStatusText = "已使用目前手機位置作為起點"
+        applySpecifiedCoordinateAndMaybePush(
+            latitude = location.latitude,
+            longitude = location.longitude,
+            accuracyMeters = sanitizeAccuracyMeters(location.accuracy),
+            baseStatusText = "已使用目前手機位置作為起點",
+            pushedStatusText = "已使用目前手機位置作為起點並推送",
+            holdStatusText = "已使用目前手機位置作為起點並停留"
+        )
     }
 
     private fun showCurrentPhoneLocationError() {
@@ -798,7 +865,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        stopCruise()
+        stopCruise(holdLastPosition = false)
         stopDestinationWalk(holdLastPosition = false)
         requestNotificationPermissionIfNeeded()
 
@@ -1005,7 +1072,7 @@ class MainActivity : ComponentActivity() {
         }
 
         stopFloatingJoystickService(holdLastPosition = false)
-        stopCruise()
+        stopCruise(holdLastPosition = false)
         stopDestinationWalk(holdLastPosition = false)
         stopHoldPositionService()
 
@@ -1021,6 +1088,25 @@ class MainActivity : ComponentActivity() {
             operationError = beginResult.message
             return
         }
+
+        val initialPush = MockLocationController.pushLocation(
+            context = this,
+            latitude = initial.latitude,
+            longitude = initial.longitude,
+            accuracyMeters = currentAccuracyMeters,
+            speedMetersPerSecond = 0f,
+            bearingDegrees = currentBearingDegrees,
+            mode = MockMode.DESTINATION_WALK
+        )
+        operationError = initialPush.message
+        if (!initialPush.success) {
+            MockLocationController.endMode(this, MockMode.DESTINATION_WALK)
+            mockStatusText = "慢走啟動失敗"
+            return
+        }
+        activeMode = MockMode.DESTINATION_WALK
+        refreshLastMockLocationState()
+        refreshConsumerLastKnownLocation()
 
         val simulator = DestinationWalkSimulator(destinationWaypoints.toList())
         val initialStep = simulator.step(
@@ -1093,6 +1179,7 @@ class MainActivity : ComponentActivity() {
             enterHoldPositionFromCurrent("已停止慢走，停留在最後位置")
         } else {
             MockLocationController.endMode(this, MockMode.DESTINATION_WALK)
+            activeMode = MockLocationController.latestState(this).mode
             mockStatusText = "已停止慢走"
         }
     }
@@ -1142,16 +1229,14 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        requestNotificationPermissionIfNeeded()
-        ContextCompat.startForegroundService(
-            this,
-            Intent(this, HoldPositionService::class.java).apply {
-                action = HoldPositionService.ACTION_START
-            }
-        )
         activeMode = MockMode.HOLD_POSITION
-        mockStatusText = statusText
+        mockStatusText = if (startHoldPositionService()) {
+            statusText
+        } else {
+            "$statusText，但持續停留服務啟動失敗"
+        }
         refreshLastMockLocationState()
+        refreshConsumerLastKnownLocation()
     }
 
     private fun startCruise(waypoints: List<LatLng>, mode: MockMode) {
@@ -1168,7 +1253,7 @@ class MainActivity : ComponentActivity() {
         }
 
         stopFloatingJoystickService(holdLastPosition = false)
-        stopCruise()
+        stopCruise(holdLastPosition = false)
         stopDestinationWalk(holdLastPosition = false)
         stopHoldPositionService()
 
@@ -1184,6 +1269,25 @@ class MainActivity : ComponentActivity() {
             operationError = beginResult.message
             return
         }
+
+        val initialPush = MockLocationController.pushLocation(
+            context = this,
+            latitude = initial.latitude,
+            longitude = initial.longitude,
+            accuracyMeters = currentAccuracyMeters,
+            speedMetersPerSecond = 0f,
+            bearingDegrees = currentBearingDegrees,
+            mode = mode
+        )
+        operationError = initialPush.message
+        if (!initialPush.success) {
+            MockLocationController.endMode(this, mode)
+            mockStatusText = "巡航啟動失敗"
+            return
+        }
+        activeMode = mode
+        refreshLastMockLocationState()
+        refreshConsumerLastKnownLocation()
 
         val simulatorStartPosition = when {
             mode == MockMode.ROUTE_CRUISE && routeStartMode == RouteStartMode.FIRST -> null
@@ -1229,30 +1333,37 @@ class MainActivity : ComponentActivity() {
                     break
                 }
                 if (step.finished) {
-                    stopCruise()
-                    mockStatusText = "巡航已完成"
+                    stopCruise(statusText = "巡航已完成，已停留在最後位置")
                     break
                 }
             }
         }
     }
 
-    private fun stopCruise() {
+    private fun stopCruise(
+        holdLastPosition: Boolean = true,
+        statusText: String = "已停止巡航，停留在最後位置"
+    ) {
         cruiseJob?.cancel()
         cruiseJob = null
         val wasRoute = isRouteCruising
         val wasArea = isAreaCruising
         isRouteCruising = false
         isAreaCruising = false
-        if (wasRoute) {
-            MockLocationController.endMode(this, MockMode.ROUTE_CRUISE)
-        }
-        if (wasArea) {
-            MockLocationController.endMode(this, MockMode.AREA_CRUISE)
-        }
         if (wasRoute || wasArea) {
             currentSpeedMetersPerSecond = 0f
-            mockStatusText = "已停止巡航"
+            if (holdLastPosition) {
+                enterHoldPositionFromCurrent(statusText)
+            } else {
+                if (wasRoute) {
+                    MockLocationController.endMode(this, MockMode.ROUTE_CRUISE)
+                }
+                if (wasArea) {
+                    MockLocationController.endMode(this, MockMode.AREA_CRUISE)
+                }
+                activeMode = MockLocationController.latestState(this).mode
+                mockStatusText = "已停止巡航"
+            }
         }
     }
 

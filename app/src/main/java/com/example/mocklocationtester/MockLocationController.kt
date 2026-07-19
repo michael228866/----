@@ -94,13 +94,18 @@ object MockLocationController {
             )
         }
 
+        val providerResult = ensureTestProvider(context)
+        if (!providerResult.success) {
+            return providerResult
+        }
+
         activeMode = mode
         currentLat = latitude
         currentLng = longitude
         currentAccuracy = sanitizeAccuracyMeters(accuracyMeters)
         currentSpeed = 0f
         persistAndBroadcast(context)
-        return ensureTestProvider(context)
+        return providerResult
     }
 
     @Synchronized
