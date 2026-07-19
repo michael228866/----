@@ -22,7 +22,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Looper
 import android.os.Process
-import android.os.SystemClock
 import android.provider.Settings
 import android.view.MotionEvent
 import androidx.activity.ComponentActivity
@@ -93,6 +92,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.osmdroid.config.Configuration
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.util.GeoPoint
+import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Overlay
+import org.osmdroid.views.overlay.Polyline
 import java.util.Locale
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -186,6 +192,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Configuration.getInstance().userAgentValue = packageName
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
         refreshPermissionState()
@@ -461,17 +468,9 @@ class MainActivity : ComponentActivity() {
     private fun applySpecifiedCoordinateAndMaybePush(
         latitude: Double,
         longitude: Double,
-        accuracyMeters: Float,
-        baseStatusText: String = "已套用指定座標",
-        pushedStatusText: String = "已套用指定座標並推送",
-        holdStatusText: String = "已套用指定座標並停留"
+        accuracyMeters: Float
     ) {
         val modeBeforeApply = currentPushableMockMode()
-        val targetMode = if (modeBeforeApply == MockMode.IDLE) {
-            MockMode.HOLD_POSITION
-        } else {
-            modeBeforeApply
-        }
         val normalizedLongitude = normalizeLongitude(longitude)
         val safeAccuracyMeters = sanitizeAccuracyMeters(accuracyMeters)
         val safeBearingDegrees = if (currentBearingDegrees.isFinite()) {
@@ -496,25 +495,31 @@ class MainActivity : ComponentActivity() {
             accuracyMeters = currentAccuracyMeters,
             speedMetersPerSecond = 0f,
             bearingDegrees = currentBearingDegrees,
-            mode = targetMode
+            mode = modeBeforeApply
         )
         operationError = saveResult.message
         refreshLastMockLocationState()
         if (!saveResult.success) {
-            mockStatusText = "$baseStatusText，但保存最後位置失敗"
+            mockStatusText = "指定座標已更新，但保存最後位置失敗"
+            return
+        }
+
+        if (modeBeforeApply == MockMode.IDLE) {
+            activeMode = MockMode.IDLE
+            mockStatusText = "已套用指定座標"
             return
         }
 
         val beginResult = MockLocationController.beginMode(
             context = this,
-            mode = targetMode,
+            mode = modeBeforeApply,
             latitude = currentLatitude,
             longitude = currentLongitude,
             accuracyMeters = currentAccuracyMeters
         )
         if (!beginResult.success) {
             operationError = beginResult.message
-            mockStatusText = "$baseStatusText，但推送模擬定位失敗"
+            mockStatusText = "已套用指定座標，但推送模擬定位失敗"
             return
         }
 
@@ -525,18 +530,17 @@ class MainActivity : ComponentActivity() {
             accuracyMeters = currentAccuracyMeters,
             speedMetersPerSecond = 0f,
             bearingDegrees = currentBearingDegrees,
-            mode = targetMode
+            mode = modeBeforeApply
         )
         operationError = pushResult.message
         if (!pushResult.success) {
-            mockStatusText = "$baseStatusText，但推送模擬定位失敗"
+            mockStatusText = "已套用指定座標，但推送模擬定位失敗"
             return
         }
 
-        activeMode = targetMode
+        activeMode = modeBeforeApply
         refreshLastMockLocationState()
-        refreshConsumerLastKnownLocation()
-        if (targetMode == MockMode.HOLD_POSITION) {
+        if (modeBeforeApply == MockMode.HOLD_POSITION) {
             requestNotificationPermissionIfNeeded()
             ContextCompat.startForegroundService(
                 this,
@@ -544,12 +548,12 @@ class MainActivity : ComponentActivity() {
                     action = HoldPositionService.ACTION_START
                 }
             )
-            mockStatusText = holdStatusText
+            mockStatusText = "已套用指定座標並停留"
         } else {
-            if (targetMode == MockMode.FLOATING_JOYSTICK) {
+            if (modeBeforeApply == MockMode.FLOATING_JOYSTICK) {
                 syncFloatingJoystickServiceToSpecifiedCoordinate()
             }
-            mockStatusText = pushedStatusText
+            mockStatusText = "已套用指定座標並推送"
         }
     }
 
@@ -583,41 +587,14 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun refreshConsumerLastKnownLocation() {
-        if (!isConsumerRunning) {
-            return
-        }
-
-        val mockLocation = ConsumerLocationUi(
-            latitude = currentLatitude,
-            longitude = currentLongitude,
-            accuracyMeters = currentAccuracyMeters,
-            speedMetersPerSecond = 0f,
-            bearingDegrees = currentBearingDegrees,
-            timeMillis = System.currentTimeMillis(),
-            elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
-            isMock = true
-        )
-        if (gpsConsumerListener != null) {
-            gpsConsumerLocation = mockLocation
-        }
-        if (networkConsumerListener != null) {
-            networkConsumerLocation = mockLocation
-        }
-        if (consumerCallback != null) {
-            consumerLocation = mockLocation
-        }
-    }
-
     private fun resetToTaipei101() {
-        applySpecifiedCoordinateAndMaybePush(
-            latitude = TAIPEI_101_LATITUDE,
-            longitude = TAIPEI_101_LONGITUDE,
-            accuracyMeters = 5f,
-            baseStatusText = "已重設為台北 101",
-            pushedStatusText = "已重設為台北 101",
-            holdStatusText = "已重設為台北 101"
-        )
+        currentLatitude = TAIPEI_101_LATITUDE
+        currentLongitude = TAIPEI_101_LONGITUDE
+        currentAccuracyMeters = 5f
+        currentSpeedMetersPerSecond = 0f
+        mapRecenterRequest += 1
+        operationError = null
+        mockStatusText = "已重設為台北 101"
     }
 
     private fun openOverlayPermissionSettings() {

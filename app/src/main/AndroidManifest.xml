@@ -16,7 +16,6 @@
         tools:ignore="MockLocation" />
 
     <application
-        android:name=".MockLocationTesterApplication"
         android:allowBackup="false"
         android:label="模擬定位測試器"
         android:supportsRtl="true"
