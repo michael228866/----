@@ -19,22 +19,30 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.CopyrightOverlay
 import org.osmdroid.views.overlay.MapEventsOverlay
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 import kotlin.math.sqrt
+
+private const val OPENSTREETMAP_ATTRIBUTION = "\u00A9 OpenStreetMap contributors"
 
 @Composable
 fun RouteMapView(
@@ -53,6 +61,59 @@ fun RouteMapView(
     var followCurrentLocation by rememberSaveable { mutableStateOf(false) }
     var localRecenterRequest by rememberSaveable { mutableStateOf(0) }
     val effectiveRecenterRequest = externalRecenterRequest + localRecenterRequest
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var mapView by remember { mutableStateOf<MapView?>(null) }
+
+    DisposableEffect(lifecycleOwner, mapView) {
+        val activeMapView = mapView
+        if (activeMapView == null) {
+            onDispose { }
+        } else {
+            var isResumed = false
+            var isDetached = false
+
+            fun resumeMapView() {
+                if (!isResumed && !isDetached) {
+                    activeMapView.onResume()
+                    isResumed = true
+                }
+            }
+
+            fun pauseMapView() {
+                if (isResumed) {
+                    activeMapView.onPause()
+                    isResumed = false
+                }
+            }
+
+            fun detachMapView() {
+                if (!isDetached) {
+                    pauseMapView()
+                    activeMapView.onDetach()
+                    isDetached = true
+                }
+            }
+
+            val observer = LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_RESUME -> resumeMapView()
+                    Lifecycle.Event.ON_PAUSE -> pauseMapView()
+                    Lifecycle.Event.ON_DESTROY -> detachMapView()
+                    else -> Unit
+                }
+            }
+
+            lifecycleOwner.lifecycle.addObserver(observer)
+            if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                resumeMapView()
+            }
+
+            onDispose {
+                lifecycleOwner.lifecycle.removeObserver(observer)
+                detachMapView()
+            }
+        }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(
@@ -96,6 +157,8 @@ fun RouteMapView(
                     setMultiTouchControls(true)
                     controller.setZoom(17.0)
                     tag = effectiveRecenterRequest
+                    addOpenStreetMapAttributionIfMissing()
+                    mapView = this
                     if (!hasInitializedCamera) {
                         controller.setCenter(GeoPoint(currentPosition.latitude, currentPosition.longitude))
                         hasInitializedCamera = true
@@ -122,7 +185,7 @@ fun RouteMapView(
                 }
             },
             update = { map ->
-                map.overlays.clear()
+                val attributionOverlay = map.clearDynamicOverlaysAndTakeAttribution()
 
                 if (routeWaypoints.size >= 2) {
                     val routeLine = Polyline().apply {
@@ -241,6 +304,8 @@ fun RouteMapView(
                     )
                 )
 
+                map.overlays.add(attributionOverlay)
+
                 val currentGeoPoint = GeoPoint(currentPosition.latitude, currentPosition.longitude)
                 val handledRecenterRequest = map.tag as? Int
                 when {
@@ -256,6 +321,29 @@ fun RouteMapView(
                 map.invalidate()
             }
         )
+    }
+}
+
+private fun MapView.addOpenStreetMapAttributionIfMissing() {
+    if (overlays.none { it is CopyrightOverlay }) {
+        overlays.add(createOpenStreetMapAttribution(context))
+    }
+}
+
+private fun MapView.clearDynamicOverlaysAndTakeAttribution(): CopyrightOverlay {
+    val attributionOverlay = overlays.filterIsInstance<CopyrightOverlay>().firstOrNull()
+        ?: createOpenStreetMapAttribution(context)
+    overlays.clear()
+    return attributionOverlay
+}
+
+private fun createOpenStreetMapAttribution(context: Context): CopyrightOverlay {
+    return CopyrightOverlay(context).apply {
+        setCopyrightNotice(OPENSTREETMAP_ATTRIBUTION)
+        setAlignBottom(true)
+        setAlignRight(false)
+        val offset = (8 * context.resources.displayMetrics.density).toInt()
+        setOffset(offset, offset)
     }
 }
 
