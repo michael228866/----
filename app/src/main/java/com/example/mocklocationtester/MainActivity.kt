@@ -22,6 +22,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Looper
 import android.os.Process
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.MotionEvent
 import androidx.activity.ComponentActivity
@@ -460,9 +461,17 @@ class MainActivity : ComponentActivity() {
     private fun applySpecifiedCoordinateAndMaybePush(
         latitude: Double,
         longitude: Double,
-        accuracyMeters: Float
+        accuracyMeters: Float,
+        baseStatusText: String = "已套用指定座標",
+        pushedStatusText: String = "已套用指定座標並推送",
+        holdStatusText: String = "已套用指定座標並停留"
     ) {
         val modeBeforeApply = currentPushableMockMode()
+        val targetMode = if (modeBeforeApply == MockMode.IDLE) {
+            MockMode.HOLD_POSITION
+        } else {
+            modeBeforeApply
+        }
         val normalizedLongitude = normalizeLongitude(longitude)
         val safeAccuracyMeters = sanitizeAccuracyMeters(accuracyMeters)
         val safeBearingDegrees = if (currentBearingDegrees.isFinite()) {
@@ -487,31 +496,25 @@ class MainActivity : ComponentActivity() {
             accuracyMeters = currentAccuracyMeters,
             speedMetersPerSecond = 0f,
             bearingDegrees = currentBearingDegrees,
-            mode = modeBeforeApply
+            mode = targetMode
         )
         operationError = saveResult.message
         refreshLastMockLocationState()
         if (!saveResult.success) {
-            mockStatusText = "指定座標已更新，但保存最後位置失敗"
-            return
-        }
-
-        if (modeBeforeApply == MockMode.IDLE) {
-            activeMode = MockMode.IDLE
-            mockStatusText = "已套用指定座標"
+            mockStatusText = "$baseStatusText，但保存最後位置失敗"
             return
         }
 
         val beginResult = MockLocationController.beginMode(
             context = this,
-            mode = modeBeforeApply,
+            mode = targetMode,
             latitude = currentLatitude,
             longitude = currentLongitude,
             accuracyMeters = currentAccuracyMeters
         )
         if (!beginResult.success) {
             operationError = beginResult.message
-            mockStatusText = "已套用指定座標，但推送模擬定位失敗"
+            mockStatusText = "$baseStatusText，但推送模擬定位失敗"
             return
         }
 
@@ -522,17 +525,18 @@ class MainActivity : ComponentActivity() {
             accuracyMeters = currentAccuracyMeters,
             speedMetersPerSecond = 0f,
             bearingDegrees = currentBearingDegrees,
-            mode = modeBeforeApply
+            mode = targetMode
         )
         operationError = pushResult.message
         if (!pushResult.success) {
-            mockStatusText = "已套用指定座標，但推送模擬定位失敗"
+            mockStatusText = "$baseStatusText，但推送模擬定位失敗"
             return
         }
 
-        activeMode = modeBeforeApply
+        activeMode = targetMode
         refreshLastMockLocationState()
-        if (modeBeforeApply == MockMode.HOLD_POSITION) {
+        refreshConsumerLastKnownLocation()
+        if (targetMode == MockMode.HOLD_POSITION) {
             requestNotificationPermissionIfNeeded()
             ContextCompat.startForegroundService(
                 this,
@@ -540,12 +544,12 @@ class MainActivity : ComponentActivity() {
                     action = HoldPositionService.ACTION_START
                 }
             )
-            mockStatusText = "已套用指定座標並停留"
+            mockStatusText = holdStatusText
         } else {
-            if (modeBeforeApply == MockMode.FLOATING_JOYSTICK) {
+            if (targetMode == MockMode.FLOATING_JOYSTICK) {
                 syncFloatingJoystickServiceToSpecifiedCoordinate()
             }
-            mockStatusText = "已套用指定座標並推送"
+            mockStatusText = pushedStatusText
         }
     }
 
@@ -579,14 +583,41 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun refreshConsumerLastKnownLocation() {
+        if (!isConsumerRunning) {
+            return
+        }
+
+        val mockLocation = ConsumerLocationUi(
+            latitude = currentLatitude,
+            longitude = currentLongitude,
+            accuracyMeters = currentAccuracyMeters,
+            speedMetersPerSecond = 0f,
+            bearingDegrees = currentBearingDegrees,
+            timeMillis = System.currentTimeMillis(),
+            elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos(),
+            isMock = true
+        )
+        if (gpsConsumerListener != null) {
+            gpsConsumerLocation = mockLocation
+        }
+        if (networkConsumerListener != null) {
+            networkConsumerLocation = mockLocation
+        }
+        if (consumerCallback != null) {
+            consumerLocation = mockLocation
+        }
+    }
+
     private fun resetToTaipei101() {
-        currentLatitude = TAIPEI_101_LATITUDE
-        currentLongitude = TAIPEI_101_LONGITUDE
-        currentAccuracyMeters = 5f
-        currentSpeedMetersPerSecond = 0f
-        mapRecenterRequest += 1
-        operationError = null
-        mockStatusText = "已重設為台北 101"
+        applySpecifiedCoordinateAndMaybePush(
+            latitude = TAIPEI_101_LATITUDE,
+            longitude = TAIPEI_101_LONGITUDE,
+            accuracyMeters = 5f,
+            baseStatusText = "已重設為台北 101",
+            pushedStatusText = "已重設為台北 101",
+            holdStatusText = "已重設為台北 101"
+        )
     }
 
     private fun openOverlayPermissionSettings() {
